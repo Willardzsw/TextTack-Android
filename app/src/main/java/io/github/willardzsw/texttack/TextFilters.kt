@@ -70,4 +70,20 @@ object TextFilters {
     }
 
     private const val SINGLE_GLYPH_MIN_SCORE = 0.8f
+    private const val LATIN_ONLY_MIN_SCORE = 0.9f
+    private const val SHORT_LATIN_MIN_SCORE = 0.97f
+    private const val SHORT_LATIN_MAX_LETTERS = 3
+
+    /**
+     * 泰语识别时，没有泰文（也没有中日韩文字）、只有拉丁字母的行，可信度门槛提高：
+     * 至少 [LATIN_ONLY_MIN_SCORE]；3 个字母以内的短行至少 [SHORT_LATIN_MIN_SCORE]。
+     * 依据（0.6.6 在 IG 视频上收集的 206 行）：真英文字幕可信度中位数 0.98，乱码（"ove""Sis""se"、
+     * 拼乱的长串）都在 0.9 以下；"S""is"这类短误识别在 0.93～0.95。
+     */
+    fun keepLatinLineInThaiMode(text: String, score: Float): Boolean {
+        if (text.any { it in '\u0E00'..'\u0E7F' || it in '\u2E80'..'\u9FFF' || it in '\uAC00'..'\uD7AF' }) return true
+        val letters = text.count { Character.isLetter(it) }
+        if (letters == 0) return true
+        return if (letters <= SHORT_LATIN_MAX_LETTERS) score >= SHORT_LATIN_MIN_SCORE else score >= LATIN_ONLY_MIN_SCORE
+    }
 }
