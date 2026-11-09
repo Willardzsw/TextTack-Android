@@ -84,6 +84,11 @@ class FloatingButton(
         return android.graphics.Rect(loc[0], loc[1], loc[0] + v.width, loc[1] + v.height)
     }
 
+    /** 转屏后把按钮拉回屏幕内。 */
+    fun keepOnScreen() {
+        if (view != null) updatePosition()
+    }
+
     /** 实时翻译开启时，按钮加一圈绿色。 */
     fun setRealtime(on: Boolean) {
         val bg = view?.background as? GradientDrawable ?: return

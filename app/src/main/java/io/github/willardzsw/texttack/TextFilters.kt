@@ -43,6 +43,24 @@ object TextFilters {
     /** 读界面节点时，这段文字是否值得显示/翻译。 */
     fun keepNodeText(text: String): Boolean = hasLetterOrDigit(text) && !isUrlLike(text) && !isNumericNoise(text)
 
+    private val codeToken = Regex("""^[A-Za-z0-9.\-/*_+:#]+$""")
+    private val edgePunct = Regex("""^[\p{Punct}「」『』“”‘’（）【】]+|[\p{Punct}「」『』“”‘’（）【】]+$""")
+
+    /**
+     * 识别结果里去掉像编号、型号、车牌、水印的词：只由拉丁字母、数字和 - / . * _ + : # 组成，
+     * 并且字母、数字都有（如"JT-45""Z15""z18EAE2T/k""J7-43"）。泰文、中文、普通英文单词和句子里单独的数字不受影响。
+     * 返回去掉后的文字；没剩下任何字母（泰文、中文、英文）就返回空字符串。
+     */
+    fun stripCodeTokens(text: String): String {
+        val kept = text.split(Regex("""\s+""")).filter { raw ->
+            val token = edgePunct.replace(raw, "")
+            // 必须字母和数字都有：句子里单独的数字（"3 美元"）不动
+            !(token.any { it.isDigit() } && token.any { it in 'A'..'Z' || it in 'a'..'z' } && codeToken.matches(token))
+        }
+        val joined = kept.joinToString(" ").trim()
+        return if (joined.any { Character.isLetter(it) }) joined else ""
+    }
+
     /** OCR 识别出的一行是否保留：去掉网址、纯符号、低置信度的单个字符。 */
     fun keepOcrLine(text: String, score: Float): Boolean {
         val t = text.trim()

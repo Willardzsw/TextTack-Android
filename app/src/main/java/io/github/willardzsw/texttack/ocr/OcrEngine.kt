@@ -63,7 +63,10 @@ class OcrEngine(private val context: Context) : AutoCloseable {
                 crop.recycle()
             }
             if (text.isBlank() || score < MIN_CONFIDENCE || !TextFilters.keepOcrLine(text, score)) continue
-            lines.add(OcrLine(text.trim(), score, quad, boundsOf(quad, bitmap.width, bitmap.height)))
+            // 去掉编号、型号一样的词（如 JT-45、Z15）；去掉后没剩正常文字就整行丢掉
+            val cleaned = TextFilters.stripCodeTokens(text.trim())
+            if (cleaned.isEmpty()) continue
+            lines.add(OcrLine(cleaned, score, quad, boundsOf(quad, bitmap.width, bitmap.height)))
         }
         val recognizeMs = SystemClock.elapsedRealtime() - recStart
 

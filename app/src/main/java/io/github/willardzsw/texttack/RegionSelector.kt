@@ -31,9 +31,13 @@ class RegionSelector(
 
     val isShowing: Boolean get() = view != null
 
-    fun show(onSelected: (Rect) -> Unit, onCancel: () -> Unit) {
+    /**
+     * [fullWidth] = true：只选上下范围，宽度铺满屏幕（实时框选用；手指不用碰左右边缘，不会触发侧滑手势）。
+     */
+    fun show(onSelected: (Rect) -> Unit, onCancel: () -> Unit, fullWidth: Boolean = false) {
         dismiss()
-        val v = SelectView(context) { rect ->
+        val screenWidth = windowManager.maximumWindowMetrics.bounds.width()
+        val v = SelectView(context, if (fullWidth) screenWidth else 0) { rect ->
             dismiss()
             if (rect != null && rect.width() >= minSize && rect.height() >= minSize) onSelected(rect) else onCancel()
         }
@@ -60,7 +64,12 @@ class RegionSelector(
     }
 
     @SuppressLint("ViewConstructor")
-    private class SelectView(context: Context, private val done: (Rect?) -> Unit) : View(context) {
+    private class SelectView(
+        context: Context,
+        /** 大于 0 时为全宽横带模式，框的宽度固定为这个值（屏幕宽度）。 */
+        private val fullWidth: Int,
+        private val done: (Rect?) -> Unit,
+    ) : View(context) {
         private val density = context.resources.displayMetrics.density
         private val dim = Paint().apply { color = 0x66000000 }
         private val clear = Paint().apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR) }
@@ -98,10 +107,10 @@ class RegionSelector(
                 }
                 MotionEvent.ACTION_MOVE -> {
                     if (abs(event.rawX - startX) > 4 || abs(event.rawY - startY) > 4) {
-                        rect = Rect(
-                            min(startX, event.rawX).toInt(), min(startY, event.rawY).toInt(),
-                            max(startX, event.rawX).toInt(), max(startY, event.rawY).toInt(),
-                        )
+                        val top = min(startY, event.rawY).toInt()
+                        val bottom = max(startY, event.rawY).toInt()
+                        rect = if (fullWidth > 0) Rect(0, top, fullWidth, bottom)
+                        else Rect(min(startX, event.rawX).toInt(), top, max(startX, event.rawX).toInt(), bottom)
                         invalidate()
                     }
                 }

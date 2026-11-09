@@ -44,6 +44,7 @@ class RealtimeTranslator(private val host: Host) {
         fun cacheKey(): String
         fun ocrLanguage(): OcrLanguage
         fun statusBarHeight(): Int
+        fun screenBounds(): Rect
         fun buttonBounds(): Rect?
         fun setButtonVisible(visible: Boolean)
         fun showError(message: String)
@@ -68,13 +69,19 @@ class RealtimeTranslator(private val host: Host) {
         scheduleNodeRefresh(0)
     }
 
+    /** 横带上下边在屏幕高度中的比例，转屏时按比例换算。 */
+    private var bandTop = 0f
+    private var bandBottom = 0f
+
+    /** 截图模式。区域是全宽横带（只选上下范围）。 */
     fun startScreen(area: Rect) {
         stop(notify = false)
         mode = Mode.SCREEN
         region = Rect(area)
+        rememberBand(area)
         generation++
         resetScreenState()
-        host.panel.show(area) { moved -> moveRegion(moved) }
+        host.panel.show(area, band = true) { moved -> moveRegion(moved) }
         Log.d(TAG, "实时翻译开始：截图模式 ${area.toShortString()}")
         val gen = generation
         host.mainHandler.postDelayed({ screenCycle(gen) }, 200)
@@ -84,12 +91,34 @@ class RealtimeTranslator(private val host: Host) {
     private fun moveRegion(area: Rect) {
         if (mode != Mode.SCREEN) return
         region = Rect(area)
+        rememberBand(area)
         processedFingerprint = null
         lastOcrText = null
         Log.d(TAG, "实时框选改到 ${area.toShortString()}")
     }
 
+    private fun rememberBand(area: Rect) {
+        val h = host.screenBounds().height().toFloat().coerceAtLeast(1f)
+        bandTop = area.top / h
+        bandBottom = area.bottom / h
+    }
+
+    /** 转屏后：横带按上下比例换算到新屏幕，宽度重新铺满，马上重新识别。主线程。 */
+    fun onScreenRotated() {
+        if (mode != Mode.SCREEN) return
+        val s = host.screenBounds()
+        val area = Rect(0, (bandTop * s.height()).toInt(), s.width(), (bandBottom * s.height()).toInt())
+        region = area
+        processedFingerprint = null
+        lastOcrText = null
+        host.panel.show(area, band = true) { moved -> moveRegion(moved) }
+        Log.d(TAG, "转屏，实时框选换算到 ${area.toShortString()}")
+    }
+
     private fun resetScreenState() {
+        seen.clear()
+        otherChangeAt = 0L
+        lastDynamicKey = null
         processedFingerprint = null
         lastOcrText = null
         translateSeq = 0
@@ -311,7 +340,8 @@ class RealtimeTranslator(private val host: Host) {
 
                 val ignoreTop = (host.statusBarHeight() - crop.top).coerceAtLeast(0)
                 val r = host.ocr.recognize(image, host.ocrLanguage(), ignoreTop)
-                val paragraphs = OcrParagraphs.group(r.lines).map { it.text }
+                r.lines.forEach { Log.d(TAG, "实时 OCR 行 %.2f %s".format(it.score, it.text)) }
+                val paragraphs = dropWatermarks(OcrParagraphs.group(r.lines), SystemClock.elapsedRealtime()).map { it.text }
                 val key = paragraphs.joinToString("\n")
                 val ocrInfo = "识别 ${r.lines.size} 行（检测 ${r.detectMs} 识别 ${r.recognizeMs} ms）"
                 if (paragraphs.isEmpty()) return "$ocrInfo，没有文字"
@@ -330,6 +360,47 @@ class RealtimeTranslator(private val host: Host) {
         } finally {
             full.recycle()
         }
+    }
+
+    // ---------- 水印、台标：同一段文字在同一位置一直不动 ----------
+
+    private class Seen(val firstAt: Long, var lastAt: Long, val cx: Int, val cy: Int)
+
+    private val seen = HashMap<String, Seen>()
+    private var otherChangeAt = 0L
+    private var lastDynamicKey: String? = null
+
+    /**
+     * 去掉水印：同一段文字在差不多的位置（中心相差 < [WATERMARK_MOVE_PX]）连续出现超过 [WATERMARK_MS]，
+     * 并且这期间框里别的文字变过（说明画面在播放，不是整屏停着），就当成水印、台标，不再翻译。
+     * 消失超过 [WATERMARK_GAP_MS] 就忘掉，重新出现时从头计时。worker 线程。
+     */
+    private fun dropWatermarks(paragraphs: List<OcrParagraphs.Paragraph>, now: Long): List<OcrParagraphs.Paragraph> {
+        for (p in paragraphs) {
+            val cx = p.bounds.centerX()
+            val cy = p.bounds.centerY()
+            val s = seen[p.text]
+            if (s == null || now - s.lastAt > WATERMARK_GAP_MS ||
+                abs(s.cx - cx) > WATERMARK_MOVE_PX || abs(s.cy - cy) > WATERMARK_MOVE_PX
+            ) {
+                seen[p.text] = Seen(now, now, cx, cy)
+            } else {
+                s.lastAt = now
+            }
+        }
+        seen.entries.removeAll { now - it.value.lastAt > WATERMARK_GAP_MS }
+        val dynamic = paragraphs.filterNot { p ->
+            val s = seen[p.text]!!
+            (now - s.firstAt > WATERMARK_MS && otherChangeAt > s.firstAt).also {
+                if (it) Log.d(TAG, "实时 当作水印跳过：${p.text}")
+            }
+        }
+        val key = dynamic.joinToString("\n") { it.text }
+        if (key != lastDynamicKey) {
+            otherChangeAt = now
+            lastDynamicKey = key
+        }
+        return dynamic
     }
 
     /** 翻译线程。过时的结果（已经显示了更新的字幕）直接丢掉。 */
@@ -374,6 +445,9 @@ class RealtimeTranslator(private val host: Host) {
         const val MAX_WAIT_MS = 1500L
         const val INTERVAL_MS = 400L
         const val HISTORY_SIZE = 3
+        const val WATERMARK_MS = 8_000L
+        const val WATERMARK_GAP_MS = 2_000L
+        const val WATERMARK_MOVE_PX = 40
         const val CACHE_SIZE = 500
     }
 }

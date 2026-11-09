@@ -39,8 +39,12 @@ class RealtimePanel(
     private var lines: List<String> = emptyList()
     private var onChanged: ((Rect) -> Unit)? = null
 
-    fun show(region: Rect, onChanged: (Rect) -> Unit) {
+    /** 全宽横带模式：移动把手只能上下移动，缩放把手在下边中间，只改高度。 */
+    private var band = false
+
+    fun show(region: Rect, band: Boolean, onChanged: (Rect) -> Unit) {
         dismiss()
+        this.band = band
         this.region = Rect(region)
         this.onChanged = onChanged
         val container = ScreenAbsoluteLayout(context)
@@ -55,7 +59,7 @@ class RealtimePanel(
             it.setOnTouchListener(DragListener(resize = false))
             windowManager.addView(it, handleParams(dp(MOVER_W), dp(MOVER_H)))
         }
-        resizer = CornerView(context).also {
+        resizer = (if (band) EdgeView(context) else CornerView(context)).also {
             it.setOnTouchListener(DragListener(resize = true))
             windowManager.addView(it, handleParams(dp(RESIZER), dp(RESIZER)))
         }
@@ -95,9 +99,14 @@ class RealtimePanel(
         else Rect(left, r.bottom + dp(8), left + w, r.bottom + dp(8) + h) to true
     }
 
-    /** 缩放把手贴在框右下角外侧。 */
+    /** 缩放把手：贴在框右下角外侧；横带模式放在下边中间。 */
     private fun resizerRect(r: Rect): Rect {
         val s = dp(RESIZER)
+        if (band) {
+            val left = r.centerX() - s / 2
+            val top = (r.bottom + dp(2)).coerceAtMost(screen().height() - s)
+            return Rect(left, top, left + s, top + s)
+        }
         val left = (r.right + dp(2)).coerceAtMost(screen().width() - s)
         val top = (r.bottom + dp(2)).coerceAtMost(screen().height() - s)
         return Rect(left, top, left + s, top + s)
@@ -226,13 +235,13 @@ class RealtimePanel(
                         val minSize = dp(MIN_REGION)
                         Rect(
                             start.left, start.top,
-                            (start.right + dx).coerceIn(start.left + minSize, s.width()),
+                            if (band) start.right else (start.right + dx).coerceIn(start.left + minSize, s.width()),
                             (start.bottom + dy).coerceIn(start.top + minSize, s.height()),
                         )
                     } else {
                         Rect(start).apply {
                             offset(
-                                dx.coerceIn(-start.left, s.width() - start.right),
+                                if (band) 0 else dx.coerceIn(-start.left, s.width() - start.right),
                                 dy.coerceIn(minTop() - start.top, s.height() - start.bottom),
                             )
                         }
@@ -271,7 +280,7 @@ class RealtimePanel(
         }
     }
 
-    /** 缩放把手：右下角的绿色三角。 */
+    /** 缩放把手：右下角的绿色三角；横带模式（[band]）由外部换成 [EdgeView]。 */
     @SuppressLint("ViewConstructor")
     private class CornerView(context: Context) : View(context) {
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xE666BB6A.toInt() }
@@ -286,6 +295,28 @@ class RealtimePanel(
             path.lineTo(w * 0.15f, h)
             path.close()
             canvas.drawPath(path, paint)
+        }
+    }
+
+    /** 横带模式的缩放把手：绿色圆点里一个上下箭头形状的短竖线。 */
+    @SuppressLint("ViewConstructor")
+    private class EdgeView(context: Context) : View(context) {
+        private val d = context.resources.displayMetrics.density
+        private val bg = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xE666BB6A.toInt() }
+        private val line = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            strokeWidth = 1.5f * d
+            strokeCap = Paint.Cap.ROUND
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            val w = width.toFloat()
+            val h = height.toFloat()
+            canvas.drawCircle(w / 2, h / 2, minOf(w, h) / 2, bg)
+            val x0 = w * 0.3f
+            val x1 = w * 0.7f
+            canvas.drawLine(x0, h * 0.42f, x1, h * 0.42f, line)
+            canvas.drawLine(x0, h * 0.58f, x1, h * 0.58f, line)
         }
     }
 

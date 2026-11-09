@@ -115,6 +115,7 @@ class TranslateAccessibilityService : AccessibilityService() {
             AppSettings.targetLanguage(this@TranslateAccessibilityService) + "|" + OpenAiSettings.selectedId(this@TranslateAccessibilityService)
         override fun ocrLanguage() = OcrLanguage.fromKey(AppSettings.ocrLanguage(this@TranslateAccessibilityService))
         override fun statusBarHeight() = this@TranslateAccessibilityService.statusBarHeight()
+        override fun screenBounds(): Rect = windowManager.maximumWindowMetrics.bounds
         override fun buttonBounds() = button?.boundsOnScreen()
         override fun setButtonVisible(visible: Boolean) { button?.setVisible(visible) }
         override fun showError(message: String) {
@@ -145,7 +146,7 @@ class TranslateAccessibilityService : AccessibilityService() {
         }
     }
 
-    /** 实时框选：框一块区域，盯着截图识别（视频字幕、游戏对话框）。 */
+    /** 实时框选：上下拖出一条全宽横带，盯着截图识别（视频字幕、游戏对话框）。 */
     private fun startRealtimeRegion() {
         if (busy) return
         val rt = realtime ?: return
@@ -157,6 +158,7 @@ class TranslateAccessibilityService : AccessibilityService() {
                 button?.setRealtime(true)
             },
             onCancel = {},
+            fullWidth = true,
         )
     }
 
@@ -438,6 +440,15 @@ class TranslateAccessibilityService : AccessibilityService() {
         } catch (e: Exception) {
             Log.e(TAG, "调试 翻译失败：${e.message}", e)
         }
+    }
+
+    /** 转屏：实时框选的横带按比例换算位置；悬浮按钮保持在屏幕内。 */
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        mainHandler.postDelayed({
+            button?.keepOnScreen()
+            realtime?.onScreenRotated()
+        }, 300)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
