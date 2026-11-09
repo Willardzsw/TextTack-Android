@@ -2,6 +2,7 @@ package io.github.willardzsw.texttack
 
 import android.accessibilityservice.AccessibilityService
 import android.graphics.Rect
+import android.view.WindowManager
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
 
@@ -9,9 +10,17 @@ import android.view.accessibility.AccessibilityWindowInfo
 data class TextBlock(
     val text: String,
     val bounds: Rect,
-    /** true 表示来自 contentDescription（多为图标、图片的说明），不是界面上直接显示的文字。 */
-    val fromDescription: Boolean,
-)
+    val source: Source,
+) {
+    enum class Source {
+        /** 界面节点上直接显示的文字 */
+        NODE_TEXT,
+        /** 节点的 contentDescription（多为图标、图片的说明） */
+        NODE_DESCRIPTION,
+        /** 截屏后本地 OCR 识别 */
+        OCR,
+    }
+}
 
 /**
  * 通过无障碍节点读取当前屏幕上所有可见文字。
@@ -22,8 +31,15 @@ object NodeTextReader {
     private const val MAX_DEPTH = 80
     private const val MAX_BLOCKS = 400
 
+    /**
+     * 过滤规则：
+     * - 节点下面已经有带文字的子节点时，不用它自己的 contentDescription（多半是把子节点文字拼成一句的重复内容）
+     * - 跳过只有网址/域名、纯符号的文字（[TextFilters.keepNodeText]）
+     * - 框裁到屏幕范围内，完全在屏幕外的跳过
+     */
     fun read(service: AccessibilityService): List<TextBlock> {
-        val screen = Rect()
+        val screen = (service.getSystemService(AccessibilityService.WINDOW_SERVICE) as WindowManager)
+            .maximumWindowMetrics.bounds
         val out = LinkedHashMap<String, TextBlock>()
 
         val roots = service.windows
@@ -39,25 +55,36 @@ object NodeTextReader {
         return out.values.toList()
     }
 
-    private fun visit(node: AccessibilityNodeInfo, out: MutableMap<String, TextBlock>, depth: Int, rect: Rect) {
-        if (depth > MAX_DEPTH || out.size >= MAX_BLOCKS) return
-        if (!node.isVisibleToUser) return
+    /** 返回这个节点或它的子孙是否带有文字（过滤前），用来判断说明文字是不是重复的。 */
+    private fun visit(node: AccessibilityNodeInfo, out: MutableMap<String, TextBlock>, depth: Int, screen: Rect): Boolean {
+        if (depth > MAX_DEPTH || out.size >= MAX_BLOCKS) return false
+        if (!node.isVisibleToUser) return false
 
         val text = node.text?.toString()?.trim().orEmpty()
         val description = node.contentDescription?.toString()?.trim().orEmpty()
-        val fromDescription = text.isEmpty()
-        val value = text.ifEmpty { description }
-        if (value.isNotEmpty()) {
-            node.getBoundsInScreen(rect)
-            if (rect.width() > 0 && rect.height() > 0) {
-                val key = value + "@" + rect.flattenToString()
-                if (key !in out) out[key] = TextBlock(value, Rect(rect), fromDescription)
-            }
-        }
 
+        // 先记下自己的文字，再遍历子节点，保持从上到下的阅读顺序
+        if (text.isNotEmpty()) add(node, text, TextBlock.Source.NODE_TEXT, out, screen)
+
+        var childHasText = false
+        val descriptionSlot = if (text.isEmpty() && description.isNotEmpty()) out.size else -1
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-            visit(child, out, depth + 1, rect)
+            if (visit(child, out, depth + 1, screen)) childHasText = true
         }
+
+        if (descriptionSlot >= 0 && !childHasText) {
+            add(node, description, TextBlock.Source.NODE_DESCRIPTION, out, screen)
+        }
+        return text.isNotEmpty() || description.isNotEmpty() || childHasText
+    }
+
+    private fun add(node: AccessibilityNodeInfo, value: String, source: TextBlock.Source, out: MutableMap<String, TextBlock>, screen: Rect) {
+        if (!TextFilters.keepNodeText(value)) return
+        val rect = Rect()
+        node.getBoundsInScreen(rect)
+        if (!rect.intersect(screen) || rect.width() <= 0 || rect.height() <= 0) return
+        val key = value + "@" + rect.flattenToString()
+        if (key !in out) out[key] = TextBlock(value, rect, source)
     }
 }

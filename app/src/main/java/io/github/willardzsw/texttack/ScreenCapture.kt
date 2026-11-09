@@ -8,27 +8,22 @@ import android.view.Display
 import java.io.File
 import java.util.concurrent.Executor
 
-/**
- * 无障碍截屏（安卓 11+）。0.2.0 只用来验证能不能截、要多久、两次之间的最短间隔，
- * 截到的图存到 Android/data/<包名>/files/screenshots/last.png，方便用 adb 拉回电脑。
- */
+/** 无障碍截屏（安卓 11+），得到软件位图。 */
 class ScreenCapture(
     private val service: AccessibilityService,
     private val worker: Executor,
 ) {
-    private var lastSuccessAt = 0L
+    class Shot(val bitmap: Bitmap, val tookMs: Long)
 
-    /** [onDone] 在后台线程回调，参数是给用户看的结果说明。 */
-    fun capture(onDone: (String) -> Unit) {
+    /** 回调在 [worker] 线程：成功给位图，失败给中文原因。 */
+    fun capture(onSuccess: (Shot) -> Unit, onFailure: (String) -> Unit) {
         val start = SystemClock.elapsedRealtime()
-        Log.d(TAG, "调用 takeScreenshot")
         service.takeScreenshot(
             Display.DEFAULT_DISPLAY,
             worker,
             object : AccessibilityService.TakeScreenshotCallback {
                 override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
                     val tookMs = SystemClock.elapsedRealtime() - start
-                    Log.d(TAG, "截屏成功回调 $tookMs ms")
                     val buffer = result.hardwareBuffer
                     val bitmap = try {
                         Bitmap.wrapHardwareBuffer(buffer, result.colorSpace)
@@ -36,42 +31,25 @@ class ScreenCapture(
                     } finally {
                         buffer.close()
                     }
-                    if (bitmap == null) {
-                        onDone("截屏成功，但转换图片失败")
-                        return
-                    }
-
-                    val sinceLast = if (lastSuccessAt == 0L) null else start - lastSuccessAt
-                    lastSuccessAt = start
-
-                    val width = bitmap.width
-                    val height = bitmap.height
-                    val saveStart = SystemClock.elapsedRealtime()
-                    val file = save(bitmap)
-                    val saveMs = SystemClock.elapsedRealtime() - saveStart
-                    bitmap.recycle()
-
-                    onDone(buildString {
-                        append("截屏成功：${width}×${height}，用时 $tookMs ms")
-                        if (sinceLast != null) append("，距上次 $sinceLast ms")
-                        append(if (file != null) "\n已保存（$saveMs ms）" else "\n保存失败")
-                    })
+                    Log.d(TAG, "截屏 ${bitmap?.width}×${bitmap?.height}，$tookMs ms")
+                    if (bitmap == null) onFailure("截屏成功，但转换图片失败") else onSuccess(Shot(bitmap, tookMs))
                 }
 
                 override fun onFailure(errorCode: Int) {
-                    Log.w(TAG, "截屏失败回调 $errorCode")
-                    onDone("截屏失败：${errorText(errorCode)}（错误码 $errorCode）")
+                    Log.w(TAG, "截屏失败 $errorCode")
+                    onFailure("截屏失败：${errorText(errorCode)}（错误码 $errorCode）")
                 }
             },
         )
     }
 
-    private fun save(bitmap: Bitmap): File? = runCatching {
-        val dir = File(service.getExternalFilesDir(null), "screenshots").apply { mkdirs() }
-        val file = File(dir, "last.png")
-        file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
-        file
-    }.getOrNull()
+    /** 调试用：把最近一张截图存到 Android/data/<包名>/files/screenshots/last.png（覆盖）。 */
+    fun saveForDebug(bitmap: Bitmap) {
+        runCatching {
+            val dir = File(service.getExternalFilesDir(null), "screenshots").apply { mkdirs() }
+            File(dir, "last.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        }
+    }
 
     private fun errorText(code: Int) = when (code) {
         AccessibilityService.ERROR_TAKE_SCREENSHOT_INTERNAL_ERROR -> "系统内部错误"

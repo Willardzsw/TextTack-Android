@@ -47,8 +47,43 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="20dp"
+            android:text="@string/ocr_language_title"
+            android:textSize="17sp" />
+
+        <RadioGroup
+            android:id="@+id/ocr_language"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <RadioButton
+                android:id="@+id/ocr_language_th"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="24dp"
+                android:text="@string/ocr_language_th" />
+
+            <RadioButton
+                android:id="@+id/ocr_language_cjk"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/ocr_language_cjk" />
+        </RadioGroup>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
             android:lineSpacingExtra="4dp"
             android:text="@string/main_intro"
             android:textSize="15sp" />
+
+        <Button
+            android:id="@+id/open_licenses"
+            style="?android:attr/borderlessButtonStyle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="@string/open_licenses" />
     </LinearLayout>
 </ScrollView>

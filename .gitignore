@@ -22,6 +22,7 @@ keystore.properties
 
 # OCR 模型（体积大，按 docs/移植清单.md 手动放入）
 *.onnx
+app/src/main/assets/ocr/*/
 
 # 系统文件
 .DS_Store
