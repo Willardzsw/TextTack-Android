@@ -18,12 +18,13 @@ import kotlin.math.abs
  * 实时翻译（跟随屏幕变化）。两种模式：
  *
  * 界面文字模式（能读到节点文字的应用）：
- * - 不截图，监听无障碍事件。滑动/切换页面时先收起译文；画面停下 [SETTLE_MS] 后重新读文字
+ * - 不截图，监听无障碍事件。滑动/切换页面时先收起译文；画面停下 [SETTLE_MS] 后重新读文字；
+ *   内容一直在变但没在滑动时，最多 [MAX_WAIT_MS] 强制读一次
  * - 文字和位置都没变就不动；翻过的句子记在缓存里，只翻新出现的
  * - 译文层不挡手指
  *
  * 截图模式（游戏、视频、图片，必须先框一个区域）：
- * - 每轮截一次图，只取区域；和上一轮比，没变化就跳过，有变化才 OCR + 翻译
+ * - 每轮截一次图，只取区域；和上次识别的画面一样就跳过；变了要等连续两轮不再变（画面停住）才 OCR + 翻译
  * - 译文显示在区域外的横栏里（[RealtimePanel]），不会被下一次截图截到
  */
 class RealtimeTranslator(private val host: Host) {
@@ -72,6 +73,7 @@ class RealtimeTranslator(private val host: Host) {
         region = Rect(area)
         generation++
         lastFingerprint = null
+        processedFingerprint = null
         host.panel.show(area)
         Log.d(TAG, "实时翻译开始：截图模式 ${area.toShortString()}")
         val gen = generation
@@ -144,6 +146,7 @@ class RealtimeTranslator(private val host: Host) {
     // ---------- 界面文字模式 ----------
 
     private var firstEventAt = 0L
+    private var lastScrollAt = 0L
     private var refreshing = false
     private var refreshPending = false
     private var shownSignature: String? = null
@@ -160,6 +163,7 @@ class RealtimeTranslator(private val host: Host) {
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
             AccessibilityEvent.TYPE_WINDOWS_CHANGED -> {
                 // 位置已经变了，旧译文先收起
+                lastScrollAt = SystemClock.elapsedRealtime()
                 if (host.overlay.isShowing) {
                     host.overlay.dismiss()
                     shownSignature = null
@@ -168,9 +172,11 @@ class RealtimeTranslator(private val host: Host) {
         }
         val now = SystemClock.elapsedRealtime()
         if (!host.mainHandler.hasCallbacks(nodeRefresh)) firstEventAt = now
-        // 一直有动画、事件停不下来时，最多等 MAX_WAIT_MS 也刷新一次
+        // 内容一直在变（轮播、动画）、事件停不下来时，最多等 MAX_WAIT_MS 也刷新一次；
+        // 但还在滑动时不强制刷新，免得读到滑动途中的位置和只露出一半的段落
         val waited = now - firstEventAt
-        scheduleNodeRefresh(if (waited >= MAX_WAIT_MS) 0 else SETTLE_MS)
+        val scrolling = now - lastScrollAt < SETTLE_MS
+        scheduleNodeRefresh(if (waited >= MAX_WAIT_MS && !scrolling) 0 else SETTLE_MS)
     }
 
     private fun scheduleNodeRefresh(delay: Long) {
@@ -218,7 +224,9 @@ class RealtimeTranslator(private val host: Host) {
 
     // ---------- 截图模式 ----------
 
+    /** 上一轮截到的画面 / 上一次识别过的画面。 */
     private var lastFingerprint: IntArray? = null
+    private var processedFingerprint: IntArray? = null
 
     private fun screenCycle(gen: Int) {
         if (gen != generation || mode != Mode.SCREEN) return
@@ -240,7 +248,7 @@ class RealtimeTranslator(private val host: Host) {
                 host.capture.capture(
                     onSuccess = { shot ->
                         val changed = processShot(shot, area, gen)
-                        Log.d(TAG, "实时截图一轮 ${SystemClock.elapsedRealtime() - start} ms，${if (changed) "有变化" else "没变化"}")
+                        Log.d(TAG, "实时截图一轮 ${SystemClock.elapsedRealtime() - start} ms，${if (changed) "已识别" else "跳过"}")
                         next(INTERVAL_MS)
                     },
                     onFailure = { message ->
@@ -266,10 +274,17 @@ class RealtimeTranslator(private val host: Host) {
             if (!crop.intersect(0, 0, full.width, full.height)) return false
             val image = Bitmap.createBitmap(full, crop.left, crop.top, crop.width(), crop.height())
             try {
+                // 画面变了以后，要等它停住（连续两轮一样）才识别：字幕、对话框出来后通常会停一会儿，
+                // 正在动的画面不白跑识别。第一轮直接识别。
                 val fp = fingerprint(image)
                 val previous = lastFingerprint
-                if (previous != null && !differs(previous, fp)) return false
                 lastFingerprint = fp
+                val processed = processedFingerprint
+                if (processed != null) {
+                    if (previous == null || differs(previous, fp)) return false   // 还在变，等下一轮
+                    if (!differs(processed, fp)) return false                    // 和上次识别的一样
+                }
+                processedFingerprint = fp
 
                 val ignoreTop = (host.statusBarHeight() - crop.top).coerceAtLeast(0)
                 val r = host.ocr.recognize(image, host.ocrLanguage(), ignoreTop)

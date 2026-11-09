@@ -357,6 +357,7 @@ class TranslateAccessibilityService : AccessibilityService() {
             override fun onReceive(context: Context, intent: Intent) {
                 if (intent.action == DEBUG_NODES_ACTION) {
                     worker.execute {
+                        NodeTextReader.describeWindows(this@TranslateAccessibilityService).forEach { Log.d(TAG, "调试 窗口 $it") }
                         val list = NodeTextReader.read(this@TranslateAccessibilityService)
                         Log.d(TAG, "调试 节点：${list.size} 段")
                         list.forEach { Log.d(TAG, "调试 节点 ${it.bounds.toShortString()} ${it.text}") }
