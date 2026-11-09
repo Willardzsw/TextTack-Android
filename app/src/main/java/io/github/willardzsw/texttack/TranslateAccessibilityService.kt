@@ -34,7 +34,7 @@ import java.util.concurrent.Executors
 /**
  * 贴译的核心服务（无感翻译：只在出错时提示）。
  * - 点按钮：读界面节点文字 → 翻译 → 在原位置盖译文；一段都读不到时自动截屏识别
- * - 长按按钮：弹出菜单（框选、截图、实时）；截图 = 截屏 + 本地 OCR → 合并成段落 → 翻译
+ * - 长按按钮：弹出菜单（框选、截图、实时、实时框选）；截图 = 截屏 + 本地 OCR → 合并成段落 → 翻译
  * - 实时翻译开启时按钮有绿圈，点按钮停止（见 [RealtimeTranslator]）
  * - 译文显示时，点任意处关闭
  */
@@ -125,7 +125,7 @@ class TranslateAccessibilityService : AccessibilityService() {
         }
     }
 
-    /** 实时翻译：能读到界面文字就用界面文字模式，否则先框一个区域，用截图模式。 */
+    /** 实时：翻界面文字（网页、聊天等）。界面一段文字都读不到时，改为框选区域截图识别。 */
     private fun startRealtime() {
         if (busy) return
         val rt = realtime ?: return
@@ -137,17 +137,25 @@ class TranslateAccessibilityService : AccessibilityService() {
                     rt.startNodes()
                     button?.setRealtime(true)
                 } else {
-                    selector?.show(
-                        onSelected = { area ->
-                            mainHandler.removeCallbacks(releaseOcr)
-                            rt.startScreen(area)
-                            button?.setRealtime(true)
-                        },
-                        onCancel = {},
-                    )
+                    startRealtimeRegion()
                 }
             }
         }
+    }
+
+    /** 实时框选：框一块区域，盯着截图识别（视频字幕、游戏对话框）。 */
+    private fun startRealtimeRegion() {
+        if (busy) return
+        val rt = realtime ?: return
+        overlay?.dismiss()
+        selector?.show(
+            onSelected = { area ->
+                mainHandler.removeCallbacks(releaseOcr)
+                rt.startScreen(area)
+                button?.setRealtime(true)
+            },
+            onCancel = {},
+        )
     }
 
     private fun onButtonTap() {
@@ -186,11 +194,12 @@ class TranslateAccessibilityService : AccessibilityService() {
         overlay?.dismiss()
         menu?.show(
             anchor,
-            listOf(
+            listOfNotNull(
                 ActionMenu.Item("框选") { startRegionSelect() },
                 ActionMenu.Item("截图") { if (!busy) { realtime?.stop(); begin(); captureAndOcr() } },
-                if (realtime?.isActive == true) ActionMenu.Item("停止实时") { realtime?.stop() }
-                else ActionMenu.Item("实时") { startRealtime() },
+                if (realtime?.isActive == true) ActionMenu.Item("停止实时") { realtime?.stop() } else null,
+                if (realtime?.isActive != true) ActionMenu.Item("实时") { startRealtime() } else null,
+                if (realtime?.isActive != true) ActionMenu.Item("实时框选") { startRealtimeRegion() } else null,
             ),
         )
     }
