@@ -90,8 +90,8 @@ class TranslateAccessibilityService : AccessibilityService() {
                     } else {
                         busy = false
                         overlay?.show(list)
-                        val described = list.count { it.source == TextBlock.Source.NODE_DESCRIPTION }
-                        toast("读到 ${list.size} 段文字（其中说明文字 $described 段），用时 $tookMs ms")
+                        toast("读到 ${list.size} 段文字，用时 $tookMs ms")
+                        list.forEach { Log.d(TAG, "节点 ${it.bounds.toShortString()} ${it.text}") }
                     }
                 }.onFailure {
                     busy = false
@@ -193,19 +193,28 @@ class TranslateAccessibilityService : AccessibilityService() {
     //
     // adb shell am broadcast -a io.github.willardzsw.texttack.DEBUG_OCR     //     --es file fixtures/google-th.png --ei side 1600 --es lang th
     // file 相对于 Android/data/<包名>/files/；结果看 adb logcat -s TextTack
+    // 读当前屏幕节点：adb shell am broadcast -a io.github.willardzsw.texttack.DEBUG_NODES
 
     private var debugReceiver: BroadcastReceiver? = null
 
     private fun registerDebugReceiver() {
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
+                if (intent.action == DEBUG_NODES_ACTION) {
+                    worker.execute {
+                        val list = NodeTextReader.read(this@TranslateAccessibilityService)
+                        Log.d(TAG, "调试 节点：${list.size} 段")
+                        list.forEach { Log.d(TAG, "调试 节点 ${it.bounds.toShortString()} ${it.text}") }
+                    }
+                    return
+                }
                 val path = intent.getStringExtra("file") ?: "screenshots/last.png"
                 val side = intent.getIntExtra("side", OcrEngine.DEFAULT_MAX_DETECT_SIDE)
                 val language = OcrLanguage.fromKey(intent.getStringExtra("lang"))
                 worker.execute { runDebugOcr(File(getExternalFilesDir(null), path), side, language) }
             }
         }
-        val filter = IntentFilter(DEBUG_OCR_ACTION)
+        val filter = IntentFilter(DEBUG_OCR_ACTION).apply { addAction(DEBUG_NODES_ACTION) }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
         } else {
@@ -262,5 +271,6 @@ class TranslateAccessibilityService : AccessibilityService() {
     private companion object {
         const val OCR_IDLE_RELEASE_MS = 60_000L
         const val DEBUG_OCR_ACTION = "io.github.willardzsw.texttack.DEBUG_OCR"
+        const val DEBUG_NODES_ACTION = "io.github.willardzsw.texttack.DEBUG_NODES"
     }
 }

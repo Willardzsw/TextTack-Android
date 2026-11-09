@@ -15,8 +15,6 @@ data class TextBlock(
     enum class Source {
         /** 界面节点上直接显示的文字 */
         NODE_TEXT,
-        /** 节点的 contentDescription（多为图标、图片的说明） */
-        NODE_DESCRIPTION,
         /** 截屏后本地 OCR 识别 */
         OCR,
     }
@@ -30,61 +28,60 @@ object NodeTextReader {
 
     private const val MAX_DEPTH = 80
     private const val MAX_BLOCKS = 400
+    private const val MIN_SIZE_DP = 4f
+
+    /** 不读：自己的悬浮层、状态栏/导航栏等系统窗口、输入法键盘。 */
+    private val SKIPPED_WINDOW_TYPES = setOf(
+        AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY,
+        AccessibilityWindowInfo.TYPE_SYSTEM,
+        AccessibilityWindowInfo.TYPE_INPUT_METHOD,
+    )
 
     /**
-     * 过滤规则：
-     * - 节点下面已经有带文字的子节点时，不用它自己的 contentDescription（多半是把子节点文字拼成一句的重复内容）
+     * 只读屏幕上真正显示出来的文字（节点的 text），过滤规则：
+     * - 不读 contentDescription：那是给读屏软件念的说明（如图标按钮"关于这条结果的详细信息"），屏幕上看不到
      * - 跳过只有网址/域名、纯符号的文字（[TextFilters.keepNodeText]）
-     * - 框裁到屏幕范围内，完全在屏幕外的跳过
+     * - 不读状态栏、导航栏等系统窗口和输入法键盘
+     * - 框裁到屏幕范围内；裁完宽或高小于 [MIN_SIZE_DP] 的跳过（网页给读屏软件准备的隐藏标题常是几个像素）
      */
     fun read(service: AccessibilityService): List<TextBlock> {
         val screen = (service.getSystemService(AccessibilityService.WINDOW_SERVICE) as WindowManager)
             .maximumWindowMetrics.bounds
         val out = LinkedHashMap<String, TextBlock>()
+        val minSize = (MIN_SIZE_DP * service.resources.displayMetrics.density).toInt()
 
         val roots = service.windows
-            .filter { it.type != AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY }
+            .filter { it.type !in SKIPPED_WINDOW_TYPES }
             .mapNotNull { it.root }
             .ifEmpty { listOfNotNull(service.rootInActiveWindow) }
 
         for (root in roots) {
             if (root.packageName == service.packageName) continue
-            visit(root, out, 0, screen)
+            visit(root, out, 0, screen, minSize)
             if (out.size >= MAX_BLOCKS) break
         }
         return out.values.toList()
     }
 
-    /** 返回这个节点或它的子孙是否带有文字（过滤前），用来判断说明文字是不是重复的。 */
-    private fun visit(node: AccessibilityNodeInfo, out: MutableMap<String, TextBlock>, depth: Int, screen: Rect): Boolean {
-        if (depth > MAX_DEPTH || out.size >= MAX_BLOCKS) return false
-        if (!node.isVisibleToUser) return false
+    private fun visit(node: AccessibilityNodeInfo, out: MutableMap<String, TextBlock>, depth: Int, screen: Rect, minSize: Int) {
+        if (depth > MAX_DEPTH || out.size >= MAX_BLOCKS) return
+        if (!node.isVisibleToUser) return
 
         val text = node.text?.toString()?.trim().orEmpty()
-        val description = node.contentDescription?.toString()?.trim().orEmpty()
+        if (text.isNotEmpty()) add(node, text, out, screen, minSize)
 
-        // 先记下自己的文字，再遍历子节点，保持从上到下的阅读顺序
-        if (text.isNotEmpty()) add(node, text, TextBlock.Source.NODE_TEXT, out, screen)
-
-        var childHasText = false
-        val descriptionSlot = if (text.isEmpty() && description.isNotEmpty()) out.size else -1
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-            if (visit(child, out, depth + 1, screen)) childHasText = true
+            visit(child, out, depth + 1, screen, minSize)
         }
-
-        if (descriptionSlot >= 0 && !childHasText) {
-            add(node, description, TextBlock.Source.NODE_DESCRIPTION, out, screen)
-        }
-        return text.isNotEmpty() || description.isNotEmpty() || childHasText
     }
 
-    private fun add(node: AccessibilityNodeInfo, value: String, source: TextBlock.Source, out: MutableMap<String, TextBlock>, screen: Rect) {
+    private fun add(node: AccessibilityNodeInfo, value: String, out: MutableMap<String, TextBlock>, screen: Rect, minSize: Int) {
         if (!TextFilters.keepNodeText(value)) return
         val rect = Rect()
         node.getBoundsInScreen(rect)
-        if (!rect.intersect(screen) || rect.width() <= 0 || rect.height() <= 0) return
+        if (!rect.intersect(screen) || rect.width() < minSize || rect.height() < minSize) return
         val key = value + "@" + rect.flattenToString()
-        if (key !in out) out[key] = TextBlock(value, rect, source)
+        if (key !in out) out[key] = TextBlock(value, rect, TextBlock.Source.NODE_TEXT)
     }
 }

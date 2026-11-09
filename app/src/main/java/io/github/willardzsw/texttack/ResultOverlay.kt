@@ -59,7 +59,6 @@ class ResultOverlay(
     private fun makeLabel(block: TextBlock): TextView {
         val strokeColor = when (block.source) {
             TextBlock.Source.NODE_TEXT -> 0xFFFFC107.toInt()        // 黄
-            TextBlock.Source.NODE_DESCRIPTION -> 0xFF4FC3F7.toInt() // 蓝
             TextBlock.Source.OCR -> 0xFF66BB6A.toInt()              // 绿
         }
         return TextView(context).apply {
