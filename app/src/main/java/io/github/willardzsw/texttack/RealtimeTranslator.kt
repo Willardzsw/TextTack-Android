@@ -94,7 +94,6 @@ class RealtimeTranslator(private val host: Host) {
         rememberBand(area)
         processedFingerprint = null
         lastOcrText = null
-        recentRounds.clear()
         Log.d(TAG, "实时框选改到 ${area.toShortString()}")
     }
 
@@ -117,7 +116,6 @@ class RealtimeTranslator(private val host: Host) {
     }
 
     private fun resetScreenState() {
-        recentRounds.clear()
         seen.clear()
         otherChangeAt = 0L
         lastDynamicKey = null
@@ -283,8 +281,6 @@ class RealtimeTranslator(private val host: Host) {
     // 翻译回来时如果已经有更新的字幕显示了，就丢掉这条过时的。
 
     private var processedFingerprint: IntArray? = null
-    /** 最近几轮识别出的段落（用来确认新文字，worker 线程）。 */
-    private val recentRounds = ArrayDeque<Set<String>>()
     @Volatile private var lastOcrText: String? = null
     private val translateExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
     @Volatile private var translateSeq = 0
@@ -345,12 +341,9 @@ class RealtimeTranslator(private val host: Host) {
                 val ignoreTop = (host.statusBarHeight() - crop.top).coerceAtLeast(0)
                 val r = host.ocr.recognize(image, host.ocrLanguage(), ignoreTop)
                 r.lines.forEach { Log.d(TAG, "实时 OCR 行 %.2f %s".format(it.score, it.text)) }
-                val read = dropWatermarks(OcrParagraphs.group(r.lines), SystemClock.elapsedRealtime()).map { it.text }
-                // 新文字要在最近几轮里读到过一样的结果才算数：识别抖动出来的变体通常只出现一次
-                val paragraphs = read.filter { p -> recentRounds.any { p in it } }
-                recentRounds.addLast(read.toSet())
-                while (recentRounds.size > CONFIRM_ROUNDS) recentRounds.removeFirst()
-                if (read.isNotEmpty() && paragraphs.isEmpty()) return "识别 ${r.lines.size} 行，等下一轮确认"
+                // 注：0.6.7 试过"新文字要读到两次一样才翻译"，但视频字幕约 0.7 秒就换、泰文上下标记识别会抖，
+                // 同样的结果很少连续出现，45 轮里只翻了 3 句，已去掉
+                val paragraphs = dropWatermarks(OcrParagraphs.group(r.lines), SystemClock.elapsedRealtime()).map { it.text }
                 val key = paragraphs.joinToString("\n")
                 val ocrInfo = "识别 ${r.lines.size} 行（检测 ${r.detectMs} 识别 ${r.recognizeMs} ms）"
                 if (paragraphs.isEmpty()) return "$ocrInfo，没有文字"
@@ -454,8 +447,6 @@ class RealtimeTranslator(private val host: Host) {
         const val MAX_WAIT_MS = 1500L
         const val INTERVAL_MS = 400L
         const val HISTORY_SIZE = 3
-        /** 新文字要在前 3 轮里出现过同样的结果才翻译。 */
-        const val CONFIRM_ROUNDS = 3
         const val WATERMARK_MS = 8_000L
         const val WATERMARK_GAP_MS = 2_000L
         const val WATERMARK_MOVE_PX = 40
