@@ -3,6 +3,7 @@ package io.github.willardzsw.texttack
 import android.accessibilityservice.AccessibilityService
 import android.graphics.Bitmap
 import android.os.SystemClock
+import android.util.Log
 import android.view.Display
 import java.io.File
 import java.util.concurrent.Executor
@@ -20,12 +21,14 @@ class ScreenCapture(
     /** [onDone] 在后台线程回调，参数是给用户看的结果说明。 */
     fun capture(onDone: (String) -> Unit) {
         val start = SystemClock.elapsedRealtime()
+        Log.d(TAG, "调用 takeScreenshot")
         service.takeScreenshot(
             Display.DEFAULT_DISPLAY,
             worker,
             object : AccessibilityService.TakeScreenshotCallback {
                 override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
                     val tookMs = SystemClock.elapsedRealtime() - start
+                    Log.d(TAG, "截屏成功回调 $tookMs ms")
                     val buffer = result.hardwareBuffer
                     val bitmap = try {
                         Bitmap.wrapHardwareBuffer(buffer, result.colorSpace)
@@ -56,6 +59,7 @@ class ScreenCapture(
                 }
 
                 override fun onFailure(errorCode: Int) {
+                    Log.w(TAG, "截屏失败回调 $errorCode")
                     onDone("截屏失败：${errorText(errorCode)}（错误码 $errorCode）")
                 }
             },

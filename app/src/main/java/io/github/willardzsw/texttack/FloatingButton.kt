@@ -6,6 +6,7 @@ import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -103,11 +104,13 @@ class FloatingButton(
 
         private val longPressRunnable = Runnable {
             longPressed = true
+            Log.d(TAG, "长按触发")
             view?.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
             onLongPress()
         }
 
         override fun onTouch(v: View, event: MotionEvent): Boolean {
+            if (event.actionMasked != MotionEvent.ACTION_MOVE) Log.d(TAG, "触摸 ${MotionEvent.actionToString(event.actionMasked)} 长按=$longPressed 拖动=$dragging")
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     downRawX = event.rawX

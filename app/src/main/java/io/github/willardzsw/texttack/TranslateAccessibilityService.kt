@@ -4,9 +4,9 @@ import android.accessibilityservice.AccessibilityService
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.util.Log
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
-import android.widget.Toast
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
@@ -26,6 +26,7 @@ class TranslateAccessibilityService : AccessibilityService() {
     private var button: FloatingButton? = null
     private var overlay: ResultOverlay? = null
     private var capture: ScreenCapture? = null
+    private var messageBar: MessageBar? = null
     @Volatile private var busy = false
 
     override fun onServiceConnected() {
@@ -34,6 +35,7 @@ class TranslateAccessibilityService : AccessibilityService() {
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         overlay = ResultOverlay(this, windowManager)
         capture = ScreenCapture(this, worker)
+        messageBar = MessageBar(this, windowManager)
         button = FloatingButton(this, windowManager, ::readScreenText, ::takeTestScreenshot).also { it.show() }
     }
 
@@ -64,6 +66,7 @@ class TranslateAccessibilityService : AccessibilityService() {
     }
 
     private fun takeTestScreenshot() {
+        Log.d(TAG, "长按处理 busy=$busy")
         if (busy) return
         busy = true
         overlay?.dismiss()
@@ -85,8 +88,10 @@ class TranslateAccessibilityService : AccessibilityService() {
         }, 150)
     }
 
+    /** 显示提示。不用系统 Toast：应用通知关闭时会被系统屏蔽。 */
     private fun toast(message: String) {
-        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+        Log.d(TAG, "提示：$message")
+        messageBar?.show(message)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -98,6 +103,7 @@ class TranslateAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         mainHandler.removeCallbacksAndMessages(null)
+        messageBar?.hide()
         overlay?.dismiss()
         button?.hide()
         if (::worker.isInitialized) worker.shutdownNow()
