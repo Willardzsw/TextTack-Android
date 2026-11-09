@@ -1,0 +1,28 @@
+# Gradle / Android Studio
+.gradle/
+build/
+/local.properties
+/captures/
+.externalNativeBuild/
+.cxx/
+*.iml
+.idea/
+.kotlin/
+
+# 构建产物
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# 签名文件（不进 git）
+*.jks
+*.keystore
+keystore.properties
+
+# OCR 模型（体积大，按 docs/移植清单.md 手动放入）
+*.onnx
+
+# 系统文件
+.DS_Store
+Thumbs.db
