@@ -24,7 +24,8 @@ import kotlin.math.abs
  * - 译文层不挡手指
  *
  * 截图模式（游戏、视频、图片，必须先框一个区域）：
- * - 每轮截一次图，只取区域；和上次识别的画面一样就跳过；变了要等连续两轮不再变（画面停住）才 OCR + 翻译
+ * - 每轮截一次图，只取区域；和上次识别的画面一样就跳过；变了要等连续两轮不再变（画面停住）才 OCR + 翻译；
+ *   视频画面一直在动时，最多连续跳过 [MAX_UNSTABLE_ROUNDS] 轮就识别一次
  * - 译文显示在区域外的横栏里（[RealtimePanel]），不会被下一次截图截到
  */
 class RealtimeTranslator(private val host: Host) {
@@ -74,6 +75,7 @@ class RealtimeTranslator(private val host: Host) {
         generation++
         lastFingerprint = null
         processedFingerprint = null
+        unstableRounds = 0
         host.panel.show(area)
         Log.d(TAG, "实时翻译开始：截图模式 ${area.toShortString()}")
         val gen = generation
@@ -227,6 +229,8 @@ class RealtimeTranslator(private val host: Host) {
     /** 上一轮截到的画面 / 上一次识别过的画面。 */
     private var lastFingerprint: IntArray? = null
     private var processedFingerprint: IntArray? = null
+    private var unstableRounds = 0
+    @Volatile private var skipReason = ""
 
     private fun screenCycle(gen: Int) {
         if (gen != generation || mode != Mode.SCREEN) return
@@ -248,7 +252,7 @@ class RealtimeTranslator(private val host: Host) {
                 host.capture.capture(
                     onSuccess = { shot ->
                         val changed = processShot(shot, area, gen)
-                        Log.d(TAG, "实时截图一轮 ${SystemClock.elapsedRealtime() - start} ms，${if (changed) "已识别" else "跳过"}")
+                        Log.d(TAG, "实时截图一轮 ${SystemClock.elapsedRealtime() - start} ms，${if (changed) "已识别" else "跳过（$skipReason）"}")
                         next(INTERVAL_MS)
                     },
                     onFailure = { message ->
@@ -274,16 +278,27 @@ class RealtimeTranslator(private val host: Host) {
             if (!crop.intersect(0, 0, full.width, full.height)) return false
             val image = Bitmap.createBitmap(full, crop.left, crop.top, crop.width(), crop.height())
             try {
-                // 画面变了以后，要等它停住（连续两轮一样）才识别：字幕、对话框出来后通常会停一会儿，
-                // 正在动的画面不白跑识别。第一轮直接识别。
+                // 画面变了以后，等它停住（连续两轮一样）再识别：字幕、对话框出来后通常会停一会儿。
+                // 但视频画面一直在动、永远停不住，所以连续变化超过 MAX_UNSTABLE_ROUNDS 轮也识别一次。
+                // 第一轮直接识别。
                 val fp = fingerprint(image)
                 val previous = lastFingerprint
                 lastFingerprint = fp
                 val processed = processedFingerprint
                 if (processed != null) {
-                    if (previous == null || differs(previous, fp)) return false   // 还在变，等下一轮
-                    if (!differs(processed, fp)) return false                    // 和上次识别的一样
+                    val moving = previous == null || differs(previous, fp)
+                    if (moving) {
+                        unstableRounds++
+                        if (unstableRounds < MAX_UNSTABLE_ROUNDS) {
+                            skipReason = "画面在动"
+                            return false
+                        }
+                    } else if (!differs(processed, fp)) {
+                        skipReason = "没变化"
+                        return false
+                    }
                 }
+                unstableRounds = 0
                 processedFingerprint = fp
 
                 val ignoreTop = (host.statusBarHeight() - crop.top).coerceAtLeast(0)
@@ -331,5 +346,7 @@ class RealtimeTranslator(private val host: Host) {
         const val MAX_WAIT_MS = 1500L
         const val INTERVAL_MS = 800L
         const val CACHE_SIZE = 500
+        /** 画面连续变化这么多轮（约 2.5 秒）还停不住，也识别一次（视频字幕）。 */
+        const val MAX_UNSTABLE_ROUNDS = 3
     }
 }
