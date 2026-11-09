@@ -76,10 +76,20 @@ class RealtimeTranslator(private val host: Host) {
         lastFingerprint = null
         processedFingerprint = null
         unstableRounds = 0
-        host.panel.show(area)
+        host.panel.show(area) { moved -> moveRegion(moved) }
         Log.d(TAG, "实时翻译开始：截图模式 ${area.toShortString()}")
         val gen = generation
         host.mainHandler.postDelayed({ screenCycle(gen) }, 200)
+    }
+
+    /** 拖动把手后换到新区域：重新开始比较画面，下一轮直接识别。 */
+    private fun moveRegion(area: Rect) {
+        if (mode != Mode.SCREEN) return
+        region = Rect(area)
+        lastFingerprint = null
+        processedFingerprint = null
+        unstableRounds = 0
+        Log.d(TAG, "实时框选移到 ${area.toShortString()}")
     }
 
     fun stop(notify: Boolean = true) {

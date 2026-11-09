@@ -33,10 +33,12 @@ import java.util.concurrent.Executors
 
 /**
  * 贴译的核心服务（无感翻译：只在出错时提示）。
- * - 点按钮：读界面节点文字 → 翻译 → 在原位置盖译文；一段都读不到时自动截屏识别
- * - 长按按钮：弹出菜单（框选、截图、实时、实时框选）；截图 = 截屏 + 本地 OCR → 合并成段落 → 翻译
- * - 实时翻译开启时按钮有绿圈，点按钮停止（见 [RealtimeTranslator]）
- * - 译文显示时，点任意处关闭
+ * 单击悬浮按钮展开菜单：
+ * - 读取翻译：读界面节点文字 → 翻译 → 在原位置盖译文；一段都读不到时自动截屏识别
+ * - 框选：拖出一个框，只翻译框里的内容
+ * - 截图翻译：截屏 + 本地 OCR → 合并成段落 → 翻译
+ * - 实时 / 实时框选 / 停止实时：见 [RealtimeTranslator]，开启时按钮有绿圈
+ * 译文显示时，点任意处关闭
  */
 class TranslateAccessibilityService : AccessibilityService() {
 
@@ -158,20 +160,38 @@ class TranslateAccessibilityService : AccessibilityService() {
         )
     }
 
+    /** 单击（长按也一样）：展开菜单；菜单已展开就收起。 */
     private fun onButtonTap() {
-        if (realtime?.isActive == true) {
-            realtime?.stop()
-            return
-        }
         if (menu?.isShowing == true) {
             menu?.dismiss()
             return
         }
-        if (overlay?.isShowing == true) {
+        if (overlay?.isShowing == true && realtime?.isActive != true) {
             overlay?.dismiss()
             return
         }
         if (busy) return
+        val anchor = button?.boundsOnScreen() ?: return
+        val live = realtime?.isActive == true
+        menu?.show(
+            anchor,
+            listOfNotNull(
+                ActionMenu.Item("读取翻译") { startReadTranslate() },
+                ActionMenu.Item("框选") { startRegionSelect() },
+                ActionMenu.Item("截图翻译") { if (!busy) { realtime?.stop(); begin(); captureAndOcr() } },
+                if (live) ActionMenu.Item("停止实时") { realtime?.stop() } else null,
+                if (!live) ActionMenu.Item("实时") { startRealtime() } else null,
+                if (!live) ActionMenu.Item("实时框选") { startRealtimeRegion() } else null,
+            ),
+        )
+    }
+
+    private fun onButtonLongPress() = onButtonTap()
+
+    /** 读取翻译：读界面文字翻译整屏；一段都读不到时自动截图识别。 */
+    private fun startReadTranslate() {
+        if (busy) return
+        realtime?.stop()
         begin()
         worker.execute {
             val start = SystemClock.elapsedRealtime()
@@ -185,23 +205,6 @@ class TranslateAccessibilityService : AccessibilityService() {
                 translateAndShow(blocks.map { ResultOverlay.Shown(it.bounds, it.text) })
             }
         }
-    }
-
-    /** 长按：弹出菜单（框选、截图）。 */
-    private fun onButtonLongPress() {
-        if (busy) return
-        val anchor = button?.boundsOnScreen() ?: return
-        overlay?.dismiss()
-        menu?.show(
-            anchor,
-            listOfNotNull(
-                ActionMenu.Item("框选") { startRegionSelect() },
-                ActionMenu.Item("截图") { if (!busy) { realtime?.stop(); begin(); captureAndOcr() } },
-                if (realtime?.isActive == true) ActionMenu.Item("停止实时") { realtime?.stop() } else null,
-                if (realtime?.isActive != true) ActionMenu.Item("实时") { startRealtime() } else null,
-                if (realtime?.isActive != true) ActionMenu.Item("实时框选") { startRealtimeRegion() } else null,
-            ),
-        )
     }
 
     private fun startRegionSelect() {
