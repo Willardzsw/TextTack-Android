@@ -24,9 +24,9 @@ import kotlin.math.abs
  * - 译文层不挡手指
  *
  * 截图模式（游戏、视频、图片，必须先框一个区域）：
- * - 每轮截一次图，只取区域；和上次识别的画面一样就跳过；变了要等连续两轮不再变（画面停住）才 OCR + 翻译；
- *   视频画面一直在动时，最多连续跳过 [MAX_UNSTABLE_ROUNDS] 轮就识别一次
- * - 译文显示在区域外的横栏里（[RealtimePanel]），不会被下一次截图截到
+ * - 约每 [INTERVAL_MS] 截一次图，只取区域；画面变了就识别，识别出新文字才在后台翻译，识别不等翻译
+ * - 译文栏保留最近 [HISTORY_SIZE] 句
+ * - 译文显示在区域外的横栏里（[RealtimePanel]），不会被下一次截图截到；框可以拖动、缩放
  */
 class RealtimeTranslator(private val host: Host) {
 
@@ -73,23 +73,28 @@ class RealtimeTranslator(private val host: Host) {
         mode = Mode.SCREEN
         region = Rect(area)
         generation++
-        lastFingerprint = null
-        processedFingerprint = null
-        unstableRounds = 0
+        resetScreenState()
         host.panel.show(area) { moved -> moveRegion(moved) }
         Log.d(TAG, "实时翻译开始：截图模式 ${area.toShortString()}")
         val gen = generation
         host.mainHandler.postDelayed({ screenCycle(gen) }, 200)
     }
 
-    /** 拖动把手后换到新区域：重新开始比较画面，下一轮直接识别。 */
+    /** 拖动/缩放把手后换到新区域：重新比较画面，下一轮直接识别（已显示的译文保留）。 */
     private fun moveRegion(area: Rect) {
         if (mode != Mode.SCREEN) return
         region = Rect(area)
-        lastFingerprint = null
         processedFingerprint = null
-        unstableRounds = 0
-        Log.d(TAG, "实时框选移到 ${area.toShortString()}")
+        lastOcrText = null
+        Log.d(TAG, "实时框选改到 ${area.toShortString()}")
+    }
+
+    private fun resetScreenState() {
+        processedFingerprint = null
+        lastOcrText = null
+        translateSeq = 0
+        shownSeq = 0
+        synchronized(history) { history.clear() }
     }
 
     fun stop(notify: Boolean = true) {
@@ -103,6 +108,12 @@ class RealtimeTranslator(private val host: Host) {
         host.setButtonVisible(true)
         shownSignature = null
         if (notify) host.onStopped()
+    }
+
+    /** 服务销毁时调用：关掉翻译线程。 */
+    fun release() {
+        stop(notify = false)
+        translateExecutor.shutdownNow()
     }
 
     // ---------- 翻译缓存（两种模式共用） ----------
@@ -235,12 +246,17 @@ class RealtimeTranslator(private val host: Host) {
     }
 
     // ---------- 截图模式 ----------
+    //
+    // 每轮：截图 → 取区域 → 和上次识别过的画面比，没变化就跳过；变了就识别（框选区域识别只要约 0.15 秒）。
+    // 识别出的文字和上次一样就不翻译；有新字幕才交给后台翻译，识别不等翻译，继续下一轮。
+    // 翻译回来时如果已经有更新的字幕显示了，就丢掉这条过时的。
 
-    /** 上一轮截到的画面 / 上一次识别过的画面。 */
-    private var lastFingerprint: IntArray? = null
     private var processedFingerprint: IntArray? = null
-    private var unstableRounds = 0
-    @Volatile private var skipReason = ""
+    @Volatile private var lastOcrText: String? = null
+    private val translateExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+    @Volatile private var translateSeq = 0
+    @Volatile private var shownSeq = 0
+    private val history = ArrayList<String>()
 
     private fun screenCycle(gen: Int) {
         if (gen != generation || mode != Mode.SCREEN) return
@@ -261,75 +277,77 @@ class RealtimeTranslator(private val host: Host) {
             try {
                 host.capture.capture(
                     onSuccess = { shot ->
-                        val changed = processShot(shot, area, gen)
-                        Log.d(TAG, "实时截图一轮 ${SystemClock.elapsedRealtime() - start} ms，${if (changed) "已识别" else "跳过（$skipReason）"}")
+                        val result = processShot(shot, area, gen)
+                        Log.d(TAG, "实时截图一轮 ${SystemClock.elapsedRealtime() - start} ms，$result")
                         next(INTERVAL_MS)
                     },
                     onFailure = { message ->
                         Log.w(TAG, "实时截图失败：$message")
-                        // 安全页面等：提示一次，放慢重试
+                        // 安全页面、间隔太短等：提示（最多 10 秒一次），放慢重试
                         reportError(message)
-                        next(INTERVAL_MS * 3)
+                        next(INTERVAL_MS * 4)
                     },
                 )
             } catch (e: RuntimeException) {
                 reportError("截屏失败：${e.message}")
-                next(INTERVAL_MS * 3)
+                next(INTERVAL_MS * 4)
             }
         }
         if (hideButton) host.mainHandler.postDelayed({ doCapture() }, 120) else doCapture()
     }
 
-    /** worker 线程。返回区域内容是否变化。 */
-    private fun processShot(shot: ScreenCapture.Shot, area: Rect, gen: Int): Boolean {
+    /** worker 线程。返回这一轮做了什么（写日志用）。 */
+    private fun processShot(shot: ScreenCapture.Shot, area: Rect, gen: Int): String {
         val full = shot.bitmap
         try {
             val crop = Rect(area)
-            if (!crop.intersect(0, 0, full.width, full.height)) return false
+            if (!crop.intersect(0, 0, full.width, full.height)) return "区域在屏幕外"
             val image = Bitmap.createBitmap(full, crop.left, crop.top, crop.width(), crop.height())
             try {
-                // 画面变了以后，等它停住（连续两轮一样）再识别：字幕、对话框出来后通常会停一会儿。
-                // 但视频画面一直在动、永远停不住，所以连续变化超过 MAX_UNSTABLE_ROUNDS 轮也识别一次。
-                // 第一轮直接识别。
                 val fp = fingerprint(image)
-                val previous = lastFingerprint
-                lastFingerprint = fp
                 val processed = processedFingerprint
-                if (processed != null) {
-                    val moving = previous == null || differs(previous, fp)
-                    if (moving) {
-                        unstableRounds++
-                        if (unstableRounds < MAX_UNSTABLE_ROUNDS) {
-                            skipReason = "画面在动"
-                            return false
-                        }
-                    } else if (!differs(processed, fp)) {
-                        skipReason = "没变化"
-                        return false
-                    }
-                }
-                unstableRounds = 0
+                if (processed != null && !differs(processed, fp)) return "跳过（画面没变）"
                 processedFingerprint = fp
 
                 val ignoreTop = (host.statusBarHeight() - crop.top).coerceAtLeast(0)
                 val r = host.ocr.recognize(image, host.ocrLanguage(), ignoreTop)
-                val paragraphs = OcrParagraphs.group(r.lines)
-                Log.d(TAG, "实时 OCR ${r.lines.size} 行：检测 ${r.detectMs} 识别 ${r.recognizeMs} ms")
-                val text = if (paragraphs.isEmpty()) "" else {
-                    val translated = translateCached(paragraphs.map { it.text }) ?: return true
-                    translated.joinToString("\n")
-                }
-                host.mainHandler.post { if (gen == generation && mode == Mode.SCREEN) host.panel.setText(text) }
-                return true
+                val paragraphs = OcrParagraphs.group(r.lines).map { it.text }
+                val key = paragraphs.joinToString("\n")
+                val ocrInfo = "识别 ${r.lines.size} 行（检测 ${r.detectMs} 识别 ${r.recognizeMs} ms）"
+                if (paragraphs.isEmpty()) return "$ocrInfo，没有文字"
+                if (key == lastOcrText) return "$ocrInfo，文字没变"
+                lastOcrText = key
+                val seq = ++translateSeq
+                translateExecutor.execute { translateForPanel(paragraphs, seq, gen) }
+                return "$ocrInfo，新文字 #$seq 送去翻译"
             } finally {
                 if (image !== full) image.recycle()
             }
         } catch (e: Exception) {
             Log.e(TAG, "实时 OCR 失败", e)
             reportError("识别失败：${e.message}")
-            return true
+            return "识别失败"
         } finally {
             full.recycle()
+        }
+    }
+
+    /** 翻译线程。过时的结果（已经显示了更新的字幕）直接丢掉。 */
+    private fun translateForPanel(paragraphs: List<String>, seq: Int, gen: Int) {
+        if (seq < translateSeq - 1) return // 后面已经排了更新的字幕，这条不用翻了
+        val start = SystemClock.elapsedRealtime()
+        val translated = translateCached(paragraphs) ?: return
+        val line = translated.joinToString(" ")
+        Log.d(TAG, "实时译文 #$seq ${SystemClock.elapsedRealtime() - start} ms：$line")
+        host.mainHandler.post {
+            if (gen != generation || mode != Mode.SCREEN || seq <= shownSeq) return@post
+            shownSeq = seq
+            val lines = synchronized(history) {
+                if (history.lastOrNull() != line) history.add(line)
+                while (history.size > HISTORY_SIZE) history.removeAt(0)
+                history.toList()
+            }
+            host.panel.setLines(lines)
         }
     }
 
@@ -354,9 +372,8 @@ class RealtimeTranslator(private val host: Host) {
     private companion object {
         const val SETTLE_MS = 500L
         const val MAX_WAIT_MS = 1500L
-        const val INTERVAL_MS = 800L
+        const val INTERVAL_MS = 400L
+        const val HISTORY_SIZE = 3
         const val CACHE_SIZE = 500
-        /** 画面连续变化这么多轮（约 2.5 秒）还停不住，也识别一次（视频字幕）。 */
-        const val MAX_UNSTABLE_ROUNDS = 3
     }
 }

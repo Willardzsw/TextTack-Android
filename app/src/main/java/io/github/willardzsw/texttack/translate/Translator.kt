@@ -60,6 +60,7 @@ internal object Http {
             conn.doOutput = true
             conn.setRequestProperty("Content-Type", contentType)
             conn.setRequestProperty("User-Agent", USER_AGENT)
+            conn.setRequestProperty("Connection", "keep-alive")
             headers.forEach { (k, v) -> conn.setRequestProperty(k, v) }
             conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
             val code = conn.responseCode
@@ -67,9 +68,10 @@ internal object Http {
             val text = stream?.use { it.readBytes().toString(Charsets.UTF_8) }.orEmpty()
             return Response(code, text)
         } catch (e: IOException) {
-            throw e
-        } finally {
+            // 出错时断开，免得坏连接留在连接池里
             conn.disconnect()
+            throw e
         }
+        // 正常时不调用 disconnect()：读完响应后连接回到连接池，下次请求复用，省掉重新握手（手机上几百毫秒）
     }
 }

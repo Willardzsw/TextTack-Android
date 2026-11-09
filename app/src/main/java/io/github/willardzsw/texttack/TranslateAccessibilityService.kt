@@ -450,7 +450,7 @@ class TranslateAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         mainHandler.removeCallbacksAndMessages(null)
-        realtime?.stop(notify = false)
+        realtime?.release()
         screenOffReceiver?.let { runCatching { unregisterReceiver(it) } }
         menu?.dismiss()
         selector?.dismiss()
