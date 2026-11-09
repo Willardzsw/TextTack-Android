@@ -34,7 +34,8 @@ import java.util.concurrent.Executors
 /**
  * 贴译的核心服务（无感翻译：只在出错时提示）。
  * - 点按钮：读界面节点文字 → 翻译 → 在原位置盖译文；一段都读不到时自动截屏识别
- * - 长按按钮：弹出菜单（框选、截图）；截图 = 截屏 + 本地 OCR → 合并成段落 → 翻译
+ * - 长按按钮：弹出菜单（框选、截图、实时）；截图 = 截屏 + 本地 OCR → 合并成段落 → 翻译
+ * - 实时翻译开启时按钮有绿圈，点按钮停止（见 [RealtimeTranslator]）
  * - 译文显示时，点任意处关闭
  */
 class TranslateAccessibilityService : AccessibilityService() {
@@ -49,6 +50,9 @@ class TranslateAccessibilityService : AccessibilityService() {
     private var ocr: OcrEngine? = null
     private var menu: ActionMenu? = null
     private var selector: RegionSelector? = null
+    private var realtime: RealtimeTranslator? = null
+    private var realtimePanel: RealtimePanel? = null
+    private var screenOffReceiver: BroadcastReceiver? = null
     @Volatile private var busy = false
 
     /** 空闲一段时间后释放 OCR 模型（在 worker 线程上执行）。 */
@@ -71,6 +75,16 @@ class TranslateAccessibilityService : AccessibilityService() {
         ocr = OcrEngine(this)
         menu = ActionMenu(this, windowManager)
         selector = RegionSelector(this, windowManager)
+        realtimePanel = RealtimePanel(this, windowManager)
+        realtime = RealtimeTranslator(realtimeHost).also {
+            it.setTargetProvider { TargetLanguage.fromKey(AppSettings.targetLanguage(this)) }
+        }
+        // 熄屏时停止实时翻译，省电
+        screenOffReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                realtime?.stop()
+            }
+        }.also { registerReceiver(it, IntentFilter(Intent.ACTION_SCREEN_OFF)) }
         button = FloatingButton(this, windowManager, ::onButtonTap, ::onButtonLongPress).also { it.show() }
         if (BuildConfig.DEBUG) registerDebugReceiver()
     }
@@ -85,7 +99,62 @@ class TranslateAccessibilityService : AccessibilityService() {
         return if (id != 0) resources.getDimensionPixelSize(id) else 0
     }
 
+    private val realtimeHost = object : RealtimeTranslator.Host {
+        override val mainHandler get() = this@TranslateAccessibilityService.mainHandler
+        override val worker get() = this@TranslateAccessibilityService.worker
+        override val overlay get() = this@TranslateAccessibilityService.overlay!!
+        override val panel get() = realtimePanel!!
+        override val ocr get() = this@TranslateAccessibilityService.ocr!!
+        override val capture get() = this@TranslateAccessibilityService.capture!!
+        override val packageName: String get() = this@TranslateAccessibilityService.packageName
+        override fun readNodes() = NodeTextReader.read(this@TranslateAccessibilityService)
+        override fun newTranslator() = translatorFor(TranslationProvider.fromKey(AppSettings.translationProvider(this@TranslateAccessibilityService)))
+        override fun cacheKey() = AppSettings.translationProvider(this@TranslateAccessibilityService) + "|" +
+            AppSettings.targetLanguage(this@TranslateAccessibilityService) + "|" + OpenAiSettings.selectedId(this@TranslateAccessibilityService)
+        override fun ocrLanguage() = OcrLanguage.fromKey(AppSettings.ocrLanguage(this@TranslateAccessibilityService))
+        override fun statusBarHeight() = this@TranslateAccessibilityService.statusBarHeight()
+        override fun buttonBounds() = button?.boundsOnScreen()
+        override fun setButtonVisible(visible: Boolean) { button?.setVisible(visible) }
+        override fun showError(message: String) {
+            Log.w(TAG, "出错提示：$message")
+            messageBar?.show(message, ERROR_SHOW_MS)
+        }
+        override fun onStopped() {
+            button?.setRealtime(false)
+            scheduleRelease()
+        }
+    }
+
+    /** 实时翻译：能读到界面文字就用界面文字模式，否则先框一个区域，用截图模式。 */
+    private fun startRealtime() {
+        if (busy) return
+        val rt = realtime ?: return
+        overlay?.dismiss()
+        worker.execute {
+            val hasNodes = runCatching { NodeTextReader.read(this) }.getOrDefault(emptyList()).isNotEmpty()
+            mainHandler.post {
+                if (hasNodes) {
+                    rt.startNodes()
+                    button?.setRealtime(true)
+                } else {
+                    selector?.show(
+                        onSelected = { area ->
+                            mainHandler.removeCallbacks(releaseOcr)
+                            rt.startScreen(area)
+                            button?.setRealtime(true)
+                        },
+                        onCancel = {},
+                    )
+                }
+            }
+        }
+    }
+
     private fun onButtonTap() {
+        if (realtime?.isActive == true) {
+            realtime?.stop()
+            return
+        }
         if (menu?.isShowing == true) {
             menu?.dismiss()
             return
@@ -119,13 +188,16 @@ class TranslateAccessibilityService : AccessibilityService() {
             anchor,
             listOf(
                 ActionMenu.Item("框选") { startRegionSelect() },
-                ActionMenu.Item("截图") { if (!busy) { begin(); captureAndOcr() } },
+                ActionMenu.Item("截图") { if (!busy) { realtime?.stop(); begin(); captureAndOcr() } },
+                if (realtime?.isActive == true) ActionMenu.Item("停止实时") { realtime?.stop() }
+                else ActionMenu.Item("实时") { startRealtime() },
             ),
         )
     }
 
     private fun startRegionSelect() {
         if (busy) return
+        realtime?.stop()
         selector?.show(onSelected = ::translateRegion, onCancel = {})
     }
 
@@ -356,7 +428,8 @@ class TranslateAccessibilityService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        // 只在用户点悬浮按钮时主动读取，这里暂不处理事件
+        // 只有实时翻译（界面文字模式）用到事件
+        if (event != null) realtime?.onEvent(event)
     }
 
     override fun onInterrupt() {
@@ -364,6 +437,8 @@ class TranslateAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         mainHandler.removeCallbacksAndMessages(null)
+        realtime?.stop(notify = false)
+        screenOffReceiver?.let { runCatching { unregisterReceiver(it) } }
         menu?.dismiss()
         selector?.dismiss()
         debugReceiver?.let { runCatching { unregisterReceiver(it) } }

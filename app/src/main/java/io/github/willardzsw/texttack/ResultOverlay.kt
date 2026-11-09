@@ -28,13 +28,17 @@ class ResultOverlay(
     /** 在每个 [Shown.bounds] 位置盖一块底色，写上 [Shown.text]（译文）。 */
     data class Shown(val bounds: Rect, val text: String)
 
-    fun show(items: List<Shown>) {
+    /**
+     * [touchable] = true：显示期间拦截触摸，点任意处关闭（普通翻译）。
+     * false：不挡手指，下层应用照常滑动点击（实时翻译）。
+     */
+    fun show(items: List<Shown>, touchable: Boolean = true) {
         dismiss()
         val container = ScreenAbsoluteLayout(context)
         for (item in items) {
             container.addView(makeLabel(item), ScreenAbsoluteLayout.Params(item.bounds))
         }
-        container.setOnClickListener { dismiss() }
+        if (touchable) container.setOnClickListener { dismiss() }
 
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
@@ -42,7 +46,8 @@ class ResultOverlay(
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                (if (touchable) 0 else WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE),
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or Gravity.START

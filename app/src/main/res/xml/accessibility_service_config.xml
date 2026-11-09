@@ -2,10 +2,10 @@
 <!--
   读取界面文字：canRetrieveWindowContent + flagRetrieveInteractiveWindows
   无障碍截屏：canTakeScreenshot（安卓 11+）
-  第一版只在用户点悬浮按钮时主动读取，事件只订阅窗口切换，不监听内容变化。
+  事件：实时翻译（界面文字模式）靠窗口切换、内容变化、滑动事件判断什么时候重新读取；不开实时时收到事件直接忽略。
 -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
-    android:accessibilityEventTypes="typeWindowStateChanged"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged|typeViewScrolled|typeWindowsChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
     android:accessibilityFlags="flagDefault|flagRetrieveInteractiveWindows|flagReportViewIds"
     android:canRetrieveWindowContent="true"

@@ -84,6 +84,13 @@ class FloatingButton(
         return android.graphics.Rect(loc[0], loc[1], loc[0] + v.width, loc[1] + v.height)
     }
 
+    /** 实时翻译开启时，按钮加一圈绿色。 */
+    fun setRealtime(on: Boolean) {
+        val bg = view?.background as? GradientDrawable ?: return
+        if (on) bg.setStroke((3 * density).roundToInt(), 0xFF66BB6A.toInt())
+        else bg.setStroke((1.5f * density).roundToInt(), 0x99FFFFFF.toInt())
+    }
+
     /** 处理中按钮变半透明（无感翻译，不弹提示）。 */
     fun setBusy(busy: Boolean) {
         view?.alpha = if (busy) 0.4f else 1f
