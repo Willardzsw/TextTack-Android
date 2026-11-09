@@ -212,7 +212,7 @@ class TranslateAccessibilityService : AccessibilityService() {
     private fun startRegionSelect() {
         if (busy) return
         realtime?.stop()
-        selector?.show(onSelected = ::translateRegion, onCancel = {})
+        selector?.show(onSelected = ::translateRegion, onCancel = {}, fullWidth = true)
     }
 
     /** 框选翻译：先读框里的界面文字，读不到再截屏、只识别框里的部分。 */
