@@ -20,6 +20,15 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".OpenAiSettingsActivity"
+            android:exported="false" />
+
+        <activity
+            android:name=".ProfileEditActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+
         <service
             android:name=".TranslateAccessibilityService"
             android:exported="false"

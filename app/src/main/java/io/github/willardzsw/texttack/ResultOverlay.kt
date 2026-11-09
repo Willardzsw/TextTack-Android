@@ -1,7 +1,6 @@
 package io.github.willardzsw.texttack
 
 import android.content.Context
-import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
@@ -14,7 +13,7 @@ import android.widget.TextView
 import kotlin.math.roundToInt
 
 /**
- * 全屏的结果显示层：在每段文字原来的位置画一个半透明框。
+ * 全屏的译文层：在每段原文的位置盖一块浅色底，写上译文。
  * 显示期间拦截触摸，点任意位置关闭。
  */
 class ResultOverlay(
@@ -26,11 +25,14 @@ class ResultOverlay(
 
     val isShowing: Boolean get() = layer != null
 
-    fun show(blocks: List<TextBlock>) {
+    /** 在每个 [Shown.bounds] 位置盖一块底色，写上 [Shown.text]（译文）。 */
+    data class Shown(val bounds: Rect, val text: String)
+
+    fun show(items: List<Shown>) {
         dismiss()
         val container = ScreenAbsoluteLayout(context)
-        for (block in blocks) {
-            container.addView(makeLabel(block), ScreenAbsoluteLayout.Params(block.bounds))
+        for (item in items) {
+            container.addView(makeLabel(item), ScreenAbsoluteLayout.Params(item.bounds))
         }
         container.setOnClickListener { dismiss() }
 
@@ -56,26 +58,28 @@ class ResultOverlay(
         layer = null
     }
 
-    private fun makeLabel(block: TextBlock): TextView {
-        val strokeColor = when (block.source) {
-            TextBlock.Source.NODE_TEXT -> 0xFFFFC107.toInt()        // 黄
-            TextBlock.Source.OCR -> 0xFF66BB6A.toInt()              // 绿
-        }
+    private fun makeLabel(item: Shown): TextView {
+        // 字号上限按原文框高度估：单行时大约是框高的 0.75
+        val maxSp = (item.bounds.height() * 0.75f / scaledDensity()).roundToInt().coerceIn(8, 28)
         return TextView(context).apply {
-            text = block.text
-            setTextColor(Color.WHITE)
+            text = item.text
+            setTextColor(0xFF1A1A1A.toInt())
             gravity = Gravity.CENTER_VERTICAL or Gravity.START
             val pad = (2 * density).roundToInt()
             setPadding(pad, 0, pad, 0)
             includeFontPadding = false
-            setAutoSizeTextTypeUniformWithConfiguration(6, 16, 1, TypedValue.COMPLEX_UNIT_SP)
+            setLineSpacing(0f, 0.95f)
+            setAutoSizeTextTypeUniformWithConfiguration(6, maxSp, 1, TypedValue.COMPLEX_UNIT_SP)
             background = GradientDrawable().apply {
-                setColor(0xB3000000.toInt())
-                setStroke((1 * density).roundToInt().coerceAtLeast(1), strokeColor)
-                cornerRadius = 2 * density
+                setColor(0xF7FFFFFF.toInt())
+                cornerRadius = 3 * density
             }
+            elevation = 1 * density
         }
     }
+
+    private fun scaledDensity(): Float =
+        TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 1f, context.resources.displayMetrics)
 }
 
 /** 按屏幕绝对坐标摆放子 View 的布局：自动减去本窗口在屏幕上的偏移。 */

@@ -16,16 +16,24 @@ import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import io.github.willardzsw.texttack.ocr.OcrEngine
 import io.github.willardzsw.texttack.ocr.OcrLanguage
+import io.github.willardzsw.texttack.ocr.OcrParagraphs
+import io.github.willardzsw.texttack.translate.GoogleTranslator
+import io.github.willardzsw.texttack.translate.OpenAiOptions
+import io.github.willardzsw.texttack.translate.OpenAiSettings
+import io.github.willardzsw.texttack.translate.OpenAiTranslator
+import io.github.willardzsw.texttack.translate.TargetLanguage
+import io.github.willardzsw.texttack.translate.TranslationException
+import io.github.willardzsw.texttack.translate.TranslationProvider
+import io.github.willardzsw.texttack.translate.Translator
 import java.io.File
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
 /**
- * 贴译的核心服务。
- *
- * 0.3.x：
- * - 点按钮：读取界面节点文字，在原位置画框；一段都读不到时自动改用截屏识别
- * - 长按按钮：直接截屏 + 本地 OCR，在原位置画框
+ * 贴译的核心服务（无感翻译：只在出错时提示）。
+ * - 点按钮：读界面节点文字 → 翻译 → 在原位置盖译文；一段都读不到时自动截屏识别
+ * - 长按按钮：直接截屏 + 本地 OCR → 合并成段落 → 翻译
+ * - 译文显示时，点任意处关闭
  */
 class TranslateAccessibilityService : AccessibilityService() {
 
@@ -77,55 +85,59 @@ class TranslateAccessibilityService : AccessibilityService() {
             return
         }
         if (busy) return
-        busy = true
+        begin()
         worker.execute {
             val start = SystemClock.elapsedRealtime()
             val blocks = runCatching { NodeTextReader.read(this) }
-            val tookMs = SystemClock.elapsedRealtime() - start
-            mainHandler.post {
-                blocks.onSuccess { list ->
-                    if (list.isEmpty()) {
-                        Log.d(TAG, "节点没有文字（$tookMs ms），改用截屏识别")
-                        startOcr("界面读不到文字，已改用截屏识别。")
-                    } else {
-                        busy = false
-                        overlay?.show(list)
-                        toast("读到 ${list.size} 段文字，用时 $tookMs ms")
-                        list.forEach { Log.d(TAG, "节点 ${it.bounds.toShortString()} ${it.text}") }
-                    }
-                }.onFailure {
-                    busy = false
-                    toast("读取失败：${it.message}")
-                }
+                .onFailure { Log.e(TAG, "读节点失败", it) }
+                .getOrDefault(emptyList())
+            Log.d(TAG, "读节点 ${blocks.size} 段，${SystemClock.elapsedRealtime() - start} ms")
+            if (blocks.isEmpty()) {
+                mainHandler.post { captureAndOcr() }
+            } else {
+                translateAndShow(blocks.map { ResultOverlay.Shown(it.bounds, it.text) })
             }
         }
     }
 
     private fun onButtonLongPress() {
         if (busy) return
-        busy = true
-        startOcr(null)
+        begin()
+        captureAndOcr()
     }
 
-    /** 截屏 + OCR。调用前 busy 已设为 true。 */
-    private fun startOcr(prefix: String?) {
+    /** 开始处理：收起旧译文，按钮变半透明。 */
+    private fun begin() {
+        busy = true
         overlay?.dismiss()
         messageBar?.hide()
+        button?.setBusy(true)
+    }
+
+    /** 结束处理（主线程）。只有出错时才显示一行提示。 */
+    private fun finish(error: String? = null) {
+        busy = false
+        button?.setVisible(true)
+        button?.setBusy(false)
+        if (error != null) {
+            Log.w(TAG, "出错提示：$error")
+            messageBar?.show(error, ERROR_SHOW_MS)
+        }
+    }
+
+    /** 截屏 + 本地 OCR + 翻译。主线程调用。 */
+    private fun captureAndOcr() {
         button?.setVisible(false)
         mainHandler.removeCallbacks(releaseOcr)
         val language = OcrLanguage.fromKey(AppSettings.ocrLanguage(this))
-        showProgressLater("正在识别（${language.label}）…")
-
         val fail = { message: String ->
             mainHandler.post {
-                busy = false
-                button?.setVisible(true)
-                toast(message)
+                finish(message)
                 scheduleRelease()
             }
             Unit
         }
-        // 等按钮和提示从屏幕上消失后再截
+        // 等按钮从屏幕上消失后再截
         mainHandler.postDelayed({
             val cap = capture
             if (cap == null) {
@@ -134,7 +146,10 @@ class TranslateAccessibilityService : AccessibilityService() {
             }
             try {
                 cap.capture(
-                    onSuccess = { shot -> runOcr(shot, language, prefix, cap) },
+                    onSuccess = { shot ->
+                        mainHandler.post { button?.setVisible(true) }
+                        runOcr(shot, language, cap)
+                    },
                     onFailure = fail,
                 )
             } catch (e: RuntimeException) {
@@ -144,33 +159,61 @@ class TranslateAccessibilityService : AccessibilityService() {
     }
 
     /** 在 worker 线程上执行。 */
-    private fun runOcr(shot: ScreenCapture.Shot, language: OcrLanguage, prefix: String?, cap: ScreenCapture) {
+    private fun runOcr(shot: ScreenCapture.Shot, language: OcrLanguage, cap: ScreenCapture) {
         val result = runCatching { ocr!!.recognize(shot.bitmap, language, statusBarHeight()) }
-        mainHandler.post {
-            busy = false
-            button?.setVisible(true)
-            result.onSuccess { r ->
-                val blocks = r.lines.map { TextBlock(it.text, it.bounds, TextBlock.Source.OCR) }
-                if (blocks.isNotEmpty()) overlay?.show(blocks)
-                val summary = buildString {
-                    if (prefix != null) append(prefix).append('\n')
-                    append(if (blocks.isEmpty()) "没有识别到文字" else "识别 ${blocks.size} 行（检测到 ${r.boxCount} 个框）")
-                    append("\n截屏 ${shot.tookMs} ms")
-                    if (r.loadMs > 5) append("，加载模型 ${r.loadMs} ms")
-                    append("，检测 ${r.detectMs} ms，识别 ${r.recognizeMs} ms")
-                }
-                toast(summary, 6000)
-                Log.d(TAG, "OCR ${language.key} 检测输入 ${r.detectorWidth}×${r.detectorHeight}")
-                r.lines.forEach { Log.d(TAG, "OCR 行 %.2f %s %s".format(it.score, it.bounds.toShortString(), it.text)) }
-            }.onFailure {
-                Log.e(TAG, "OCR 失败", it)
-                toast("识别失败：${it.message}")
-            }
-            scheduleRelease()
-        }
-        // 结果显示后再存调试图，不拖慢识别
-        cap.saveForDebug(shot.bitmap)
+        if (BuildConfig.DEBUG) cap.saveForDebug(shot.bitmap)
         shot.bitmap.recycle()
+        mainHandler.post { scheduleRelease() }
+
+        val r = result.getOrElse {
+            Log.e(TAG, "OCR 失败", it)
+            mainHandler.post { finish("识别失败：${it.message}") }
+            return
+        }
+        Log.d(TAG, "OCR ${language.key}：${r.lines.size} 行 / ${r.boxCount} 框，截屏 ${shot.tookMs} 加载 ${r.loadMs} " +
+            "检测 ${r.detectMs} 识别 ${r.recognizeMs} ms")
+        val paragraphs = OcrParagraphs.group(r.lines)
+        if (paragraphs.isEmpty()) {
+            mainHandler.post { finish("没有找到可翻译的文字") }
+            return
+        }
+        translateAndShow(paragraphs.map { ResultOverlay.Shown(it.bounds, it.text) })
+    }
+
+    /** 翻译并在原位置显示译文。在 worker 线程上执行。 */
+    private fun translateAndShow(items: List<ResultOverlay.Shown>) {
+        val start = SystemClock.elapsedRealtime()
+        val target = TargetLanguage.fromKey(AppSettings.targetLanguage(this))
+        val provider = TranslationProvider.fromKey(AppSettings.translationProvider(this))
+        val translations = try {
+            translatorFor(provider).translate(items.map { it.text }, target)
+        } catch (e: TranslationException) {
+            mainHandler.post { finish(e.message) }
+            return
+        } catch (e: Exception) {
+            Log.e(TAG, "翻译失败", e)
+            mainHandler.post { finish("翻译失败：${e.message}") }
+            return
+        }
+        Log.d(TAG, "翻译 ${items.size} 段（${provider.label} → ${target.label}），${SystemClock.elapsedRealtime() - start} ms")
+        val shown = items.mapIndexed { i, item -> item.copy(text = translations.getOrNull(i) ?: item.text) }
+        shown.forEachIndexed { i, s -> Log.d(TAG, "译文 ${s.bounds.toShortString()} ${items[i].text} → ${s.text}") }
+        mainHandler.post {
+            finish()
+            overlay?.show(shown)
+        }
+    }
+
+    private fun translatorFor(provider: TranslationProvider): Translator = when (provider) {
+        TranslationProvider.GOOGLE -> GoogleTranslator()
+        TranslationProvider.OPENAI -> OpenAiTranslator(
+            OpenAiOptions(
+                baseUrl = OpenAiSettings.baseUrl(this),
+                apiKey = OpenAiSettings.apiKey(this),
+                timeoutSeconds = OpenAiSettings.timeoutSeconds(this),
+                profile = OpenAiSettings.selectedProfile(this),
+            )
+        )
     }
 
     private fun scheduleRelease() {
@@ -178,22 +221,12 @@ class TranslateAccessibilityService : AccessibilityService() {
         mainHandler.postDelayed(releaseOcr, OCR_IDLE_RELEASE_MS)
     }
 
-    /** 显示提示。不用系统 Toast：应用通知关闭时会被系统屏蔽。 */
-    private fun toast(message: String, durationMs: Long = 4000) {
-        Log.d(TAG, "提示：$message")
-        messageBar?.show(message, durationMs)
-    }
-
-    /** 识别中的提示：等截完屏再显示，免得被截进去。 */
-    private fun showProgressLater(message: String) {
-        mainHandler.postDelayed({ if (busy) messageBar?.show(message, 15000) }, 400)
-    }
-
     // ---------- 调试：用存好的截图测 OCR（只在 debug 版里有） ----------
     //
     // adb shell am broadcast -a io.github.willardzsw.texttack.DEBUG_OCR     //     --es file fixtures/google-th.png --ei side 1600 --es lang th
     // file 相对于 Android/data/<包名>/files/；结果看 adb logcat -s TextTack
     // 读当前屏幕节点：adb shell am broadcast -a io.github.willardzsw.texttack.DEBUG_NODES
+    // 两个都可以加 --ez translate true，按当前设置翻译并写日志
 
     private var debugReceiver: BroadcastReceiver? = null
 
@@ -205,13 +238,15 @@ class TranslateAccessibilityService : AccessibilityService() {
                         val list = NodeTextReader.read(this@TranslateAccessibilityService)
                         Log.d(TAG, "调试 节点：${list.size} 段")
                         list.forEach { Log.d(TAG, "调试 节点 ${it.bounds.toShortString()} ${it.text}") }
+                        if (intent.getBooleanExtra("translate", false)) debugTranslate(list.map { it.text })
                     }
                     return
                 }
                 val path = intent.getStringExtra("file") ?: "screenshots/last.png"
                 val side = intent.getIntExtra("side", OcrEngine.DEFAULT_MAX_DETECT_SIDE)
                 val language = OcrLanguage.fromKey(intent.getStringExtra("lang"))
-                worker.execute { runDebugOcr(File(getExternalFilesDir(null), path), side, language) }
+                val translate = intent.getBooleanExtra("translate", false)
+                worker.execute { runDebugOcr(File(getExternalFilesDir(null), path), side, language, translate) }
             }
         }
         val filter = IntentFilter(DEBUG_OCR_ACTION).apply { addAction(DEBUG_NODES_ACTION) }
@@ -223,7 +258,7 @@ class TranslateAccessibilityService : AccessibilityService() {
         debugReceiver = receiver
     }
 
-    private fun runDebugOcr(file: File, side: Int, language: OcrLanguage) {
+    private fun runDebugOcr(file: File, side: Int, language: OcrLanguage, translate: Boolean) {
         val engine = ocr ?: return
         val bitmap = BitmapFactory.decodeFile(file.path, BitmapFactory.Options().apply {
             inPreferredConfig = android.graphics.Bitmap.Config.ARGB_8888
@@ -239,6 +274,9 @@ class TranslateAccessibilityService : AccessibilityService() {
             Log.d(TAG, "调试 OCR ${file.name} 长边 $side ${language.key}：${r.lines.size} 行 / ${r.boxCount} 框，" +
                 "检测输入 ${r.detectorWidth}×${r.detectorHeight}，加载 ${r.loadMs} 检测 ${r.detectMs} 识别 ${r.recognizeMs} ms")
             r.lines.forEach { Log.d(TAG, "调试 OCR 行 %.2f %s %s".format(it.score, it.bounds.toShortString(), it.text)) }
+            val paragraphs = OcrParagraphs.group(r.lines)
+            paragraphs.forEach { Log.d(TAG, "调试 OCR 段落 ${it.bounds.toShortString()} ${it.text}") }
+            if (translate) debugTranslate(paragraphs.map { it.text })
         } catch (e: Exception) {
             Log.e(TAG, "调试 OCR 失败", e)
         } finally {
@@ -246,6 +284,20 @@ class TranslateAccessibilityService : AccessibilityService() {
             bitmap.recycle()
         }
         mainHandler.post { scheduleRelease() }
+    }
+
+    /** 调试：按当前设置翻译并写日志，不显示在屏幕上。 */
+    private fun debugTranslate(texts: List<String>) {
+        val start = SystemClock.elapsedRealtime()
+        val target = TargetLanguage.fromKey(AppSettings.targetLanguage(this))
+        val provider = TranslationProvider.fromKey(AppSettings.translationProvider(this))
+        try {
+            val out = translatorFor(provider).translate(texts, target)
+            Log.d(TAG, "调试 翻译 ${texts.size} 段（${provider.label} → ${target.label}）${SystemClock.elapsedRealtime() - start} ms")
+            texts.forEachIndexed { i, t -> Log.d(TAG, "调试 翻译 $t → ${out[i]}") }
+        } catch (e: Exception) {
+            Log.e(TAG, "调试 翻译失败：${e.message}", e)
+        }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -270,6 +322,7 @@ class TranslateAccessibilityService : AccessibilityService() {
 
     private companion object {
         const val OCR_IDLE_RELEASE_MS = 60_000L
+        const val ERROR_SHOW_MS = 2500L
         const val DEBUG_OCR_ACTION = "io.github.willardzsw.texttack.DEBUG_OCR"
         const val DEBUG_NODES_ACTION = "io.github.willardzsw.texttack.DEBUG_NODES"
     }

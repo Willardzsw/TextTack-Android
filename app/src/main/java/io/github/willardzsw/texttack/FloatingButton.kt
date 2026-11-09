@@ -76,6 +76,11 @@ class FloatingButton(
         view = null
     }
 
+    /** 处理中按钮变半透明（无感翻译，不弹提示）。 */
+    fun setBusy(busy: Boolean) {
+        view?.alpha = if (busy) 0.4f else 1f
+    }
+
     /** 截屏前临时隐藏，避免把按钮截进去。 */
     fun setVisible(visible: Boolean) {
         view?.visibility = if (visible) View.VISIBLE else View.INVISIBLE
