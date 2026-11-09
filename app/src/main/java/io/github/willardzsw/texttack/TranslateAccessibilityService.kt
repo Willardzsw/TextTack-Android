@@ -5,7 +5,9 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Rect
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -32,7 +34,7 @@ import java.util.concurrent.Executors
 /**
  * 贴译的核心服务（无感翻译：只在出错时提示）。
  * - 点按钮：读界面节点文字 → 翻译 → 在原位置盖译文；一段都读不到时自动截屏识别
- * - 长按按钮：直接截屏 + 本地 OCR → 合并成段落 → 翻译
+ * - 长按按钮：弹出菜单（框选、截图）；截图 = 截屏 + 本地 OCR → 合并成段落 → 翻译
  * - 译文显示时，点任意处关闭
  */
 class TranslateAccessibilityService : AccessibilityService() {
@@ -45,6 +47,8 @@ class TranslateAccessibilityService : AccessibilityService() {
     private var capture: ScreenCapture? = null
     private var messageBar: MessageBar? = null
     private var ocr: OcrEngine? = null
+    private var menu: ActionMenu? = null
+    private var selector: RegionSelector? = null
     @Volatile private var busy = false
 
     /** 空闲一段时间后释放 OCR 模型（在 worker 线程上执行）。 */
@@ -65,6 +69,8 @@ class TranslateAccessibilityService : AccessibilityService() {
         capture = ScreenCapture(this, worker)
         messageBar = MessageBar(this, windowManager)
         ocr = OcrEngine(this)
+        menu = ActionMenu(this, windowManager)
+        selector = RegionSelector(this, windowManager)
         button = FloatingButton(this, windowManager, ::onButtonTap, ::onButtonLongPress).also { it.show() }
         if (BuildConfig.DEBUG) registerDebugReceiver()
     }
@@ -80,6 +86,10 @@ class TranslateAccessibilityService : AccessibilityService() {
     }
 
     private fun onButtonTap() {
+        if (menu?.isShowing == true) {
+            menu?.dismiss()
+            return
+        }
         if (overlay?.isShowing == true) {
             overlay?.dismiss()
             return
@@ -100,10 +110,39 @@ class TranslateAccessibilityService : AccessibilityService() {
         }
     }
 
+    /** 长按：弹出菜单（框选、截图）。 */
     private fun onButtonLongPress() {
         if (busy) return
+        val anchor = button?.boundsOnScreen() ?: return
+        overlay?.dismiss()
+        menu?.show(
+            anchor,
+            listOf(
+                ActionMenu.Item("框选") { startRegionSelect() },
+                ActionMenu.Item("截图") { if (!busy) { begin(); captureAndOcr() } },
+            ),
+        )
+    }
+
+    private fun startRegionSelect() {
+        if (busy) return
+        selector?.show(onSelected = ::translateRegion, onCancel = {})
+    }
+
+    /** 框选翻译：先读框里的界面文字，读不到再截屏、只识别框里的部分。 */
+    private fun translateRegion(region: Rect) {
+        if (busy) return
         begin()
-        captureAndOcr()
+        worker.execute {
+            val blocks = runCatching { NodeTextReader.read(this) }.getOrDefault(emptyList())
+                .filter { region.contains(it.bounds.centerX(), it.bounds.centerY()) }
+            Log.d(TAG, "框选 ${region.toShortString()}：节点 ${blocks.size} 段")
+            if (blocks.isEmpty()) {
+                mainHandler.post { captureAndOcr(region) }
+            } else {
+                translateAndShow(blocks.map { ResultOverlay.Shown(it.bounds, it.text) })
+            }
+        }
     }
 
     /** 开始处理：收起旧译文，按钮变半透明。 */
@@ -125,8 +164,8 @@ class TranslateAccessibilityService : AccessibilityService() {
         }
     }
 
-    /** 截屏 + 本地 OCR + 翻译。主线程调用。 */
-    private fun captureAndOcr() {
+    /** 截屏 + 本地 OCR + 翻译。[region] 不为空时只识别这个区域。主线程调用。 */
+    private fun captureAndOcr(region: Rect? = null) {
         button?.setVisible(false)
         mainHandler.removeCallbacks(releaseOcr)
         val language = OcrLanguage.fromKey(AppSettings.ocrLanguage(this))
@@ -148,7 +187,7 @@ class TranslateAccessibilityService : AccessibilityService() {
                 cap.capture(
                     onSuccess = { shot ->
                         mainHandler.post { button?.setVisible(true) }
-                        runOcr(shot, language, cap)
+                        runOcr(shot, language, cap, region)
                     },
                     onFailure = fail,
                 )
@@ -159,10 +198,21 @@ class TranslateAccessibilityService : AccessibilityService() {
     }
 
     /** 在 worker 线程上执行。 */
-    private fun runOcr(shot: ScreenCapture.Shot, language: OcrLanguage, cap: ScreenCapture) {
-        val result = runCatching { ocr!!.recognize(shot.bitmap, language, statusBarHeight()) }
-        if (BuildConfig.DEBUG) cap.saveForDebug(shot.bitmap)
-        shot.bitmap.recycle()
+    private fun runOcr(shot: ScreenCapture.Shot, language: OcrLanguage, cap: ScreenCapture, region: Rect?) {
+        val full = shot.bitmap
+        val area = region?.let { Rect(it).apply { if (!intersect(0, 0, full.width, full.height)) setEmpty() } }
+        if (area != null && area.isEmpty) {
+            full.recycle()
+            mainHandler.post { finish("框选区域不在屏幕内") }
+            return
+        }
+        val image = if (area != null) Bitmap.createBitmap(full, area.left, area.top, area.width(), area.height()) else full
+        val ignoreTop = (statusBarHeight() - (area?.top ?: 0)).coerceAtLeast(0)
+        val result = runCatching { ocr!!.recognize(image, language, ignoreTop) }
+            .map { r -> if (area == null) r else r.copy(lines = r.lines.map { it.offset(area.left, area.top) }) }
+        if (BuildConfig.DEBUG) cap.saveForDebug(image)
+        if (image !== full) image.recycle()
+        full.recycle()
         mainHandler.post { scheduleRelease() }
 
         val r = result.getOrElse {
@@ -226,7 +276,7 @@ class TranslateAccessibilityService : AccessibilityService() {
     // adb shell am broadcast -a io.github.willardzsw.texttack.DEBUG_OCR     //     --es file fixtures/google-th.png --ei side 1600 --es lang th
     // file 相对于 Android/data/<包名>/files/；结果看 adb logcat -s TextTack
     // 读当前屏幕节点：adb shell am broadcast -a io.github.willardzsw.texttack.DEBUG_NODES
-    // 两个都可以加 --ez translate true，按当前设置翻译并写日志
+    // 两个都可以加 --ez translate true，按当前设置翻译并写日志；DEBUG_OCR 可加 --es region l,t,r,b 只识别一块
 
     private var debugReceiver: BroadcastReceiver? = null
 
@@ -246,7 +296,9 @@ class TranslateAccessibilityService : AccessibilityService() {
                 val side = intent.getIntExtra("side", OcrEngine.DEFAULT_MAX_DETECT_SIDE)
                 val language = OcrLanguage.fromKey(intent.getStringExtra("lang"))
                 val translate = intent.getBooleanExtra("translate", false)
-                worker.execute { runDebugOcr(File(getExternalFilesDir(null), path), side, language, translate) }
+                val region = intent.getStringExtra("region")?.split(',')?.mapNotNull { it.trim().toIntOrNull() }
+                    ?.takeIf { it.size == 4 }?.let { Rect(it[0], it[1], it[2], it[3]) }
+                worker.execute { runDebugOcr(File(getExternalFilesDir(null), path), side, language, translate, region) }
             }
         }
         val filter = IntentFilter(DEBUG_OCR_ACTION).apply { addAction(DEBUG_NODES_ACTION) }
@@ -258,11 +310,14 @@ class TranslateAccessibilityService : AccessibilityService() {
         debugReceiver = receiver
     }
 
-    private fun runDebugOcr(file: File, side: Int, language: OcrLanguage, translate: Boolean) {
+    private fun runDebugOcr(file: File, side: Int, language: OcrLanguage, translate: Boolean, region: Rect?) {
         val engine = ocr ?: return
-        val bitmap = BitmapFactory.decodeFile(file.path, BitmapFactory.Options().apply {
-            inPreferredConfig = android.graphics.Bitmap.Config.ARGB_8888
+        val decoded = BitmapFactory.decodeFile(file.path, BitmapFactory.Options().apply {
+            inPreferredConfig = Bitmap.Config.ARGB_8888
         })
+        val bitmap = if (decoded != null && region != null) {
+            Bitmap.createBitmap(decoded, region.left, region.top, region.width(), region.height()).also { decoded.recycle() }
+        } else decoded
         if (bitmap == null) {
             Log.w(TAG, "调试 OCR：读不到 ${file.path}")
             return
@@ -270,7 +325,7 @@ class TranslateAccessibilityService : AccessibilityService() {
         val old = engine.maxDetectSide
         engine.maxDetectSide = side
         try {
-            val r = engine.recognize(bitmap, language, statusBarHeight())
+            val r = engine.recognize(bitmap, language, if (region == null) statusBarHeight() else 0)
             Log.d(TAG, "调试 OCR ${file.name} 长边 $side ${language.key}：${r.lines.size} 行 / ${r.boxCount} 框，" +
                 "检测输入 ${r.detectorWidth}×${r.detectorHeight}，加载 ${r.loadMs} 检测 ${r.detectMs} 识别 ${r.recognizeMs} ms")
             r.lines.forEach { Log.d(TAG, "调试 OCR 行 %.2f %s %s".format(it.score, it.bounds.toShortString(), it.text)) }
@@ -309,6 +364,8 @@ class TranslateAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         mainHandler.removeCallbacksAndMessages(null)
+        menu?.dismiss()
+        selector?.dismiss()
         debugReceiver?.let { runCatching { unregisterReceiver(it) } }
         messageBar?.hide()
         overlay?.dismiss()

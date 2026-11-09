@@ -83,7 +83,7 @@ class ResultOverlay(
 }
 
 /** 按屏幕绝对坐标摆放子 View 的布局：自动减去本窗口在屏幕上的偏移。 */
-private class ScreenAbsoluteLayout(context: Context) : ViewGroup(context) {
+internal class ScreenAbsoluteLayout(context: Context) : ViewGroup(context) {
 
     class Params(val screenRect: Rect) : ViewGroup.LayoutParams(screenRect.width(), screenRect.height())
 

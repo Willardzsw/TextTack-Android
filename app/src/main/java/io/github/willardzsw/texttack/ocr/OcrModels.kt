@@ -19,7 +19,13 @@ data class OcrLine(
     val score: Float,
     val quad: Array<PointF>,
     val bounds: Rect,
-)
+) {
+    /** 坐标整体平移（框选时从裁剪图坐标换回屏幕坐标）。 */
+    fun offset(dx: Int, dy: Int) = copy(
+        quad = Array(quad.size) { PointF(quad[it].x + dx, quad[it].y + dy) },
+        bounds = Rect(bounds).apply { offset(dx, dy) },
+    )
+}
 
 /** 一次识别的结果和各步骤耗时（毫秒）。 */
 data class OcrResult(

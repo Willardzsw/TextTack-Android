@@ -76,6 +76,14 @@ class FloatingButton(
         view = null
     }
 
+    /** 按钮在屏幕上的位置（用来摆长按菜单）。 */
+    fun boundsOnScreen(): android.graphics.Rect? {
+        val v = view ?: return null
+        val loc = IntArray(2)
+        v.getLocationOnScreen(loc)
+        return android.graphics.Rect(loc[0], loc[1], loc[0] + v.width, loc[1] + v.height)
+    }
+
     /** 处理中按钮变半透明（无感翻译，不弹提示）。 */
     fun setBusy(busy: Boolean) {
         view?.alpha = if (busy) 0.4f else 1f
