@@ -2,12 +2,13 @@
 <!--
   读取界面文字：canRetrieveWindowContent + flagRetrieveInteractiveWindows
   无障碍截屏：canTakeScreenshot（安卓 11+）
+  flagIncludeNotImportantViews：视频（SurfaceView）、图片这类控件常被标成"对无障碍不重要"，不加就看不到，"翻译"找不到要截图识别的区域。
   事件：实时翻译（界面文字模式）靠窗口切换、内容变化、滑动事件判断什么时候重新读取；不开实时时收到事件直接忽略。
 -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged|typeViewScrolled|typeWindowsChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
-    android:accessibilityFlags="flagDefault|flagRetrieveInteractiveWindows|flagReportViewIds"
+    android:accessibilityFlags="flagDefault|flagIncludeNotImportantViews|flagRetrieveInteractiveWindows|flagReportViewIds"
     android:canRetrieveWindowContent="true"
     android:canTakeScreenshot="true"
     android:description="@string/accessibility_service_description"
