@@ -17,10 +17,22 @@ class ScreenCapture(
 
     /** 回调在 [worker] 线程：成功给位图，失败给中文原因。 */
     fun capture(onSuccess: (Shot) -> Unit, onFailure: (String) -> Unit) {
-        val start = SystemClock.elapsedRealtime()
-        service.takeScreenshot(
-            Display.DEFAULT_DISPLAY,
-            worker,
+        service.takeScreenshot(Display.DEFAULT_DISPLAY, worker, callback(SystemClock.elapsedRealtime(), onSuccess, onFailure))
+    }
+
+    /**
+     * 只截一个应用窗口（安卓 14+）：不包括我们自己的悬浮层，译文盖在原文上也不会被截进去。
+     * 得到的图是窗口大小，左上角是窗口在屏幕上的位置。安卓 14 以下直接回调失败。
+     */
+    fun captureWindow(windowId: Int, onSuccess: (Shot) -> Unit, onFailure: (String) -> Unit) {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            onFailure("系统版本低于安卓 14，不能只截应用窗口")
+            return
+        }
+        service.takeScreenshotOfWindow(windowId, worker, callback(SystemClock.elapsedRealtime(), onSuccess, onFailure))
+    }
+
+    private fun callback(start: Long, onSuccess: (Shot) -> Unit, onFailure: (String) -> Unit) =
             object : AccessibilityService.TakeScreenshotCallback {
                 override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
                     val tookMs = SystemClock.elapsedRealtime() - start
@@ -39,9 +51,7 @@ class ScreenCapture(
                     Log.w(TAG, "截屏失败 $errorCode")
                     onFailure("截屏失败：${errorText(errorCode)}（错误码 $errorCode）")
                 }
-            },
-        )
-    }
+            }
 
     /** 调试用：把最近一张截图存到 Android/data/<包名>/files/screenshots/last.png（覆盖）。 */
     fun saveForDebug(bitmap: Bitmap) {

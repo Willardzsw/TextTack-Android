@@ -110,6 +110,7 @@ class TranslateAccessibilityService : AccessibilityService() {
         override val capture get() = this@TranslateAccessibilityService.capture!!
         override val packageName: String get() = this@TranslateAccessibilityService.packageName
         override fun readNodes() = NodeTextReader.read(this@TranslateAccessibilityService)
+        override fun scanNodes() = NodeTextReader.scan(this@TranslateAccessibilityService)
         override fun newTranslator() = translatorFor(TranslationProvider.fromKey(AppSettings.translationProvider(this@TranslateAccessibilityService)))
         override fun cacheKey() = AppSettings.translationProvider(this@TranslateAccessibilityService) + "|" +
             AppSettings.targetLanguage(this@TranslateAccessibilityService) + "|" + OpenAiSettings.selectedId(this@TranslateAccessibilityService)
@@ -453,6 +454,25 @@ class TranslateAccessibilityService : AccessibilityService() {
     private fun registerDebugReceiver() {
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
+                if (intent.action == DEBUG_WINSHOT_ACTION) {
+                    // 调试：只截图片/视频所在的应用窗口，存成 screenshots/window.png
+                    worker.execute {
+                        val scan = NodeTextReader.scan(this@TranslateAccessibilityService)
+                        Log.d(TAG, "调试 窗口截图：窗口 ${scan.mediaWindowId} ${scan.mediaWindowBounds.toShortString()}，区域 ${scan.media.size} 个")
+                        if (scan.mediaWindowId == -1) return@execute
+                        capture?.captureWindow(scan.mediaWindowId,
+                            onSuccess = { shot ->
+                                Log.d(TAG, "调试 窗口截图成功 ${shot.bitmap.width}×${shot.bitmap.height}，${shot.tookMs} ms")
+                                runCatching {
+                                    val dir = File(getExternalFilesDir(null), "screenshots").apply { mkdirs() }
+                                    File(dir, "window.png").outputStream().use { shot.bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                                }
+                                shot.bitmap.recycle()
+                            },
+                            onFailure = { Log.w(TAG, "调试 窗口截图失败：$it") })
+                    }
+                    return
+                }
                 if (intent.action == DEBUG_NODES_ACTION) {
                     worker.execute {
                         NodeTextReader.describeWindows(this@TranslateAccessibilityService).forEach { Log.d(TAG, "调试 窗口 $it") }
@@ -473,7 +493,10 @@ class TranslateAccessibilityService : AccessibilityService() {
                 worker.execute { runDebugOcr(File(getExternalFilesDir(null), path), side, language, translate, region) }
             }
         }
-        val filter = IntentFilter(DEBUG_OCR_ACTION).apply { addAction(DEBUG_NODES_ACTION) }
+        val filter = IntentFilter(DEBUG_OCR_ACTION).apply {
+            addAction(DEBUG_NODES_ACTION)
+            addAction(DEBUG_WINSHOT_ACTION)
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
         } else {
@@ -566,5 +589,6 @@ class TranslateAccessibilityService : AccessibilityService() {
         const val ERROR_SHOW_MS = 2500L
         const val DEBUG_OCR_ACTION = "io.github.willardzsw.texttack.DEBUG_OCR"
         const val DEBUG_NODES_ACTION = "io.github.willardzsw.texttack.DEBUG_NODES"
+        const val DEBUG_WINSHOT_ACTION = "io.github.willardzsw.texttack.DEBUG_WINSHOT"
     }
 }

@@ -53,7 +53,15 @@ object NodeTextReader {
     fun read(service: AccessibilityService): List<TextBlock> = scan(service).blocks
 
     /** 一次读取的结果：界面文字 + 界面文字读不到的图片/视频/画布区域（要截图识别的地方）。 */
-    class Scan(val blocks: List<TextBlock>, val media: List<Rect>, val mediaKinds: List<String>)
+    class Scan(
+        val blocks: List<TextBlock>,
+        val media: List<Rect>,
+        val mediaKinds: List<String>,
+        /** 图片/视频区域所在的应用窗口（用来只截这个窗口，不截到自己的译文层）；没有为 -1。 */
+        val mediaWindowId: Int = -1,
+        /** 这个窗口在屏幕上的位置（窗口截图坐标 + 左上角 = 屏幕坐标）。 */
+        val mediaWindowBounds: Rect = Rect(),
+    )
 
     /**
      * 读界面文字，同时找出图片、视频、游戏画布这类区域：这些控件里的字读不到，只能截图识别。
@@ -79,6 +87,8 @@ object NodeTextReader {
             if (window.type !in SKIPPED_WINDOW_TYPES) {
                 val root = window.root
                 if (root != null && root.packageName != service.packageName) {
+                    ctx.windowId = window.id
+                    ctx.windowBounds = Rect(bounds)
                     visit(root, ctx, 0)
                     if (ctx.out.size >= MAX_BLOCKS) break
                 }
@@ -89,7 +99,7 @@ object NodeTextReader {
         }
         if (windows.isEmpty()) service.rootInActiveWindow?.let { visit(it, ctx, 0) }
         val merged = mergeOverlapping(ctx.media)
-        return Scan(ctx.out.values.toList(), merged, ctx.mediaKinds)
+        return Scan(ctx.out.values.toList(), merged, ctx.mediaKinds, ctx.mediaWindowId, ctx.mediaWindowBounds)
     }
 
     /** 相交的区域合并成一个外接矩形，减少截图识别的次数。 */
@@ -126,6 +136,10 @@ object NodeTextReader {
         val covered = ArrayList<Rect>()
         val media = ArrayList<Rect>()
         val mediaKinds = ArrayList<String>()
+        var windowId = -1
+        var windowBounds = Rect()
+        var mediaWindowId = -1
+        var mediaWindowBounds = Rect()
     }
 
     private fun visit(node: AccessibilityNodeInfo, ctx: Ctx, depth: Int) {
@@ -161,6 +175,13 @@ object NodeTextReader {
         val screenArea = ctx.screen.width().toLong() * ctx.screen.height()
         if (rect.width().toLong() * rect.height() < screenArea * MIN_MEDIA_SCREEN_FRACTION) return
         if (ctx.covered.any { it.contains(rect.centerX(), rect.centerY()) }) return
+        // 只取第一个（最上层）窗口里的区域：实时模式只截这一个窗口
+        if (ctx.mediaWindowId == -1) {
+            ctx.mediaWindowId = ctx.windowId
+            ctx.mediaWindowBounds = Rect(ctx.windowBounds)
+        } else if (ctx.mediaWindowId != ctx.windowId) {
+            return
+        }
         ctx.media.add(rect)
         ctx.mediaKinds.add("${node.className?.toString()?.substringAfterLast('.')} ${rect.toShortString()}")
     }

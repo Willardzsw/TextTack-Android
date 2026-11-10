@@ -40,6 +40,7 @@ class RealtimeTranslator(private val host: Host) {
         val capture: ScreenCapture
         val packageName: String
         fun readNodes(): List<TextBlock>
+        fun scanNodes(): NodeTextReader.Scan
         fun newTranslator(): Translator
         fun cacheKey(): String
         fun ocrLanguage(): OcrLanguage
@@ -136,6 +137,11 @@ class RealtimeTranslator(private val host: Host) {
         host.panel.dismiss()
         host.setButtonVisible(true)
         shownSignature = null
+        nodeItems = emptyList()
+        mediaItems = emptyList()
+        mediaRegions = emptyList()
+        mediaKey = null
+        mediaFingerprint = null
         if (notify) host.onStopped()
     }
 
@@ -219,6 +225,10 @@ class RealtimeTranslator(private val host: Host) {
                 if (host.overlay.isShowing) {
                     host.overlay.dismiss()
                     shownSignature = null
+                    nodeItems = emptyList()
+                    mediaItems = emptyList()
+                    mediaKey = null
+                    mediaFingerprint = null
                 }
             }
         }
@@ -245,32 +255,173 @@ class RealtimeTranslator(private val host: Host) {
         refreshing = true
         val gen = generation
         host.worker.execute {
-            val blocks = runCatching { host.readNodes() }.getOrDefault(emptyList())
+            val scan = runCatching { host.scanNodes() }.getOrNull()
+            val blocks = scan?.blocks.orEmpty()
+            currentBlocks = blocks
             val signature = blocks.joinToString("\n") { it.text + "@" + it.bounds.flattenToString() }
             val translations = if (signature == shownSignature || blocks.isEmpty()) null
             else translateCached(blocks.map { it.text })
             host.mainHandler.post {
                 refreshing = false
                 if (gen != generation || mode != Mode.NODES) return@post
+                val beforeNodes = nodeItems
+                val beforeMedia = mediaItems
                 when {
                     blocks.isEmpty() -> {
-                        host.overlay.dismiss()
+                        nodeItems = emptyList()
                         shownSignature = null
                     }
-                    signature == shownSignature && host.overlay.isShowing -> Unit
+                    signature == shownSignature && nodeItems.isNotEmpty() -> Unit
                     translations != null -> {
-                        host.overlay.show(
-                            blocks.mapIndexed { i, b -> ResultOverlay.Shown(b.bounds, translations[i]) },
-                            touchable = false,
-                        )
+                        nodeItems = blocks.mapIndexed { i, b -> ResultOverlay.Shown(b.bounds, translations[i]) }
                         shownSignature = signature
                     }
                 }
+                updateMedia(scan)
+                // 只有内容变了才重画，免得视频播放时每次刷新都闪一下
+                if (nodeItems !== beforeNodes || mediaItems !== beforeMedia || !host.overlay.isShowing) render()
                 if (refreshPending) {
                     refreshPending = false
                     scheduleNodeRefresh(SETTLE_MS)
                 }
             }
+        }
+    }
+
+    // ---------- 界面文字模式里的图片/视频区域 ----------
+    //
+    // 重读界面时顺便找出图片/视频区域（和"翻译"同一套判断）。有的话每 [INTERVAL_MS] 只截这个应用窗口
+    // （安卓 14+ takeScreenshotOfWindow，不包括我们的译文层），只看这些区域：画面没变就跳过，
+    // 变了就识别，有新文字才翻译；译文和界面文字的译文一起盖在原位置上。
+
+    @Volatile private var currentBlocks: List<TextBlock> = emptyList()
+    private var nodeItems: List<ResultOverlay.Shown> = emptyList()
+    private var mediaItems: List<ResultOverlay.Shown> = emptyList()
+    @Volatile private var mediaRegions: List<Rect> = emptyList()
+    @Volatile private var mediaWindowId = -1
+    @Volatile private var mediaWindowBounds = Rect()
+    @Volatile private var mediaFingerprint: IntArray? = null
+    @Volatile private var mediaKey: String? = null
+    private var mediaLoopRunning = false
+    private var mediaUnsupported = false
+
+    /** 两部分译文合在一起显示（不挡手指）。主线程。 */
+    private fun render() {
+        val items = nodeItems + mediaItems
+        if (items.isEmpty()) host.overlay.dismiss() else host.overlay.show(items, touchable = false)
+    }
+
+    /** 主线程。 */
+    private fun updateMedia(scan: NodeTextReader.Scan?) {
+        val regions = scan?.media.orEmpty()
+        val changed = regions != mediaRegions || scan?.mediaWindowId != mediaWindowId
+        mediaRegions = regions
+        mediaWindowId = scan?.mediaWindowId ?: -1
+        mediaWindowBounds = scan?.mediaWindowBounds ?: Rect()
+        if (changed) {
+            mediaFingerprint = null
+            mediaKey = null
+            if (regions.isEmpty()) mediaItems = emptyList()
+            Log.d(TAG, "实时 图片/视频区域 ${regions.size} 个：${regions.joinToString { it.toShortString() }}")
+        }
+        if (regions.isNotEmpty() && !mediaLoopRunning && !mediaUnsupported) {
+            mediaLoopRunning = true
+            val gen = generation
+            host.mainHandler.post { mediaCycle(gen) }
+        }
+    }
+
+    private fun mediaCycle(gen: Int) {
+        if (gen != generation || mode != Mode.NODES || mediaRegions.isEmpty() || mediaWindowId == -1) {
+            mediaLoopRunning = false
+            return
+        }
+        val next = { delay: Long ->
+            host.mainHandler.post {
+                if (gen == generation && mode == Mode.NODES) host.mainHandler.postDelayed({ mediaCycle(gen) }, delay)
+                else mediaLoopRunning = false
+            }
+            Unit
+        }
+        val start = SystemClock.elapsedRealtime()
+        host.capture.captureWindow(
+            mediaWindowId,
+            onSuccess = { shot ->
+                val result = processMediaShot(shot, gen)
+                Log.d(TAG, "实时 区域一轮 ${SystemClock.elapsedRealtime() - start} ms，$result")
+                next(INTERVAL_MS)
+            },
+            onFailure = { message ->
+                Log.w(TAG, "实时 窗口截图失败：$message")
+                if (message.contains("安卓 14")) {
+                    mediaUnsupported = true
+                    host.mainHandler.post { mediaLoopRunning = false }
+                } else {
+                    next(INTERVAL_MS * 4)
+                }
+            },
+        )
+    }
+
+    /** worker 线程。返回这一轮做了什么（写日志用）。 */
+    private fun processMediaShot(shot: ScreenCapture.Shot, gen: Int): String {
+        val full = shot.bitmap
+        try {
+            val origin = mediaWindowBounds
+            val crops = ArrayList<Pair<Rect, Bitmap>>()
+            for (region in mediaRegions) {
+                // 屏幕坐标 → 窗口截图坐标
+                val local = Rect(region).apply { offset(-origin.left, -origin.top) }
+                if (!local.intersect(0, 0, full.width, full.height) || local.isEmpty) continue
+                crops.add(Rect(local).apply { offset(origin.left, origin.top) } to
+                    Bitmap.createBitmap(full, local.left, local.top, local.width(), local.height()))
+            }
+            try {
+                val fp = crops.flatMap { fingerprint(it.second).asList() }.toIntArray()
+                val previous = mediaFingerprint
+                if (previous != null && !differs(previous, fp)) return "跳过（画面没变）"
+                mediaFingerprint = fp
+
+                val blocks = currentBlocks
+                val nodeTexts = blocks.map { it.text }.toSet()
+                val lines = ArrayList<io.github.willardzsw.texttack.ocr.OcrLine>()
+                for ((screenRect, image) in crops) {
+                    val ignoreTop = (host.statusBarHeight() - screenRect.top).coerceAtLeast(0)
+                    val r = host.ocr.recognize(image, host.ocrLanguage(), ignoreTop)
+                    r.lines.forEach { line ->
+                        val moved = line.offset(screenRect.left, screenRect.top)
+                        val c = moved.bounds
+                        val overlapsNode = blocks.any { b -> Rect(b.bounds).apply { inset(-8, -8) }.contains(c.centerX(), c.centerY()) }
+                        if (!overlapsNode && moved.text !in nodeTexts) lines.add(moved)
+                    }
+                }
+                val paragraphs = OcrParagraphs.group(lines.sortedWith(compareBy({ it.bounds.top }, { it.bounds.left })))
+                val key = paragraphs.joinToString("\n") { it.text + "@" + it.bounds.flattenToString() }
+                if (key == mediaKey) return "识别 ${lines.size} 行，文字没变"
+                mediaKey = key
+                if (paragraphs.isEmpty()) {
+                    host.mainHandler.post {
+                        if (gen == generation && mode == Mode.NODES) { mediaItems = emptyList(); render() }
+                    }
+                    return "没有文字"
+                }
+                translateExecutor.execute {
+                    val translated = translateCached(paragraphs.map { it.text }) ?: return@execute
+                    host.mainHandler.post {
+                        if (gen != generation || mode != Mode.NODES || key != mediaKey) return@post
+                        mediaItems = paragraphs.mapIndexed { i, p -> ResultOverlay.Shown(p.bounds, translated[i]) }
+                        render()
+                    }
+                }
+                return "识别 ${lines.size} 行，新文字送去翻译"
+            } finally {
+                crops.forEach { it.second.recycle() }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "实时 区域识别失败", e)
+            return "识别失败"
+        } finally {
+            full.recycle()
         }
     }
 
