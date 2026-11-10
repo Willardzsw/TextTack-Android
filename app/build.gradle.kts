@@ -13,8 +13,8 @@ android {
         minSdk = 30
         targetSdk = 34
         // 功能改动后提高版本号
-        versionCode = 24
-        versionName = "0.8.3"
+        versionCode = 25
+        versionName = "0.8.4"
 
         ndk {
             // 只打 64 位 ARM，控制 ONNX Runtime 原生库体积

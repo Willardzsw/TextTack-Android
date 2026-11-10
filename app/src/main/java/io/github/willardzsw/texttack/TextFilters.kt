@@ -45,13 +45,22 @@ object TextFilters {
             """^[\d.,]+[kmb]?\s+(likes?|comments?|views?|shares?|reposts?|reshares?|saves?|plays?|replies|reply)$""",
     )
 
+    /** 中文写法：已转发726次、转发次数为26984、收藏次数为1845、点赞数为1.2万、3.5万次播放、128条评论。 */
+    private val counterLabelZh = Regex(
+        """^\S{0,6}?(次数|数量|数)[为是：:]\s*[\d.,]+[万千亿Kk]?$|^已?\S{1,4}[\d.,]+[万千亿]?次$|""" +
+            """^[\d.,]+[万千亿]?\s*(次播放|次观看|次转发|次分享|条评论|个赞|人点赞|次收藏)$""",
+    )
+
     /**
-     * 按钮上藏着的计数说明：屏幕上只显示数字，节点文字却是一句英文，
-     * 如 Instagram 的"Reposted 22 times""Save number is 76""Reshare number is 453""1,234 likes"。
-     * 只匹配"一个词 + 数字 + times"、"一个词 + number is + 数字"、"数字 + likes/comments/views…"这类整句，
-     * 正常句子（有更多的词）不受影响。
+     * 按钮上藏着的计数说明：屏幕上只显示数字，节点文字却是一句话，
+     * 如 Instagram 英文界面的"Reposted 22 times""Save number is 76""1,234 likes"，
+     * 中文界面的"已转发726次""转发次数为26984""收藏次数为1845"。
+     * 只匹配这类很短的固定句式，正常句子不受影响。
      */
-    fun isCounterLabel(text: String): Boolean = counterLabel.matches(text.trim())
+    fun isCounterLabel(text: String): Boolean {
+        val t = text.trim()
+        return counterLabel.matches(t) || counterLabelZh.matches(t)
+    }
 
     /** 读界面节点时，这段文字是否值得显示/翻译。 */
     fun keepNodeText(text: String): Boolean =
