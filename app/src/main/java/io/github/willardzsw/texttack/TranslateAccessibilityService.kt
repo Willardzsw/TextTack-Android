@@ -34,7 +34,7 @@ import java.util.concurrent.Executors
 /**
  * 贴译的核心服务（无感翻译：只在出错时提示）。
  * 单击悬浮按钮展开菜单：
- * - 读取翻译：读界面节点文字 → 翻译 → 在原位置盖译文；一段都读不到时自动截屏识别
+ * - 翻译（自动）：读界面文字；图片/视频区域截图只识别那几块；一段文字都读不到时整屏截图识别
  * - 框选：拖出一个框，只翻译框里的内容
  * - 截图翻译：截屏 + 本地 OCR → 合并成段落 → 翻译
  * - 实时 / 实时框选 / 停止实时：见 [RealtimeTranslator]，开启时按钮有绿圈
@@ -178,7 +178,7 @@ class TranslateAccessibilityService : AccessibilityService() {
         menu?.show(
             anchor,
             listOfNotNull(
-                ActionMenu.Item("读取翻译") { startReadTranslate() },
+                ActionMenu.Item("翻译") { startReadTranslate() },
                 ActionMenu.Item("框选") { startRegionSelect() },
                 ActionMenu.Item("截图翻译") { if (!busy) { realtime?.stop(); begin(); captureAndOcr() } },
                 if (live) ActionMenu.Item("停止实时") { realtime?.stop() } else null,
@@ -191,22 +191,106 @@ class TranslateAccessibilityService : AccessibilityService() {
     private fun onButtonLongPress() = onButtonTap()
 
     /** 读取翻译：读界面文字翻译整屏；一段都读不到时自动截图识别。 */
+    /**
+     * 翻译（自动）：
+     * - 一段界面文字都读不到（游戏、自绘界面）→ 整屏截图识别
+     * - 有界面文字，也有大的图片/视频区域 → 截一张图，只识别这些区域，和界面文字合在一起翻译
+     * - 只有界面文字 → 不截图，直接翻译
+     */
     private fun startReadTranslate() {
         if (busy) return
         realtime?.stop()
         begin()
         worker.execute {
             val start = SystemClock.elapsedRealtime()
-            val blocks = runCatching { NodeTextReader.read(this) }
+            val scan = runCatching { NodeTextReader.scan(this) }
                 .onFailure { Log.e(TAG, "读节点失败", it) }
-                .getOrDefault(emptyList())
-            Log.d(TAG, "读节点 ${blocks.size} 段，${SystemClock.elapsedRealtime() - start} ms")
-            if (blocks.isEmpty()) {
-                mainHandler.post { captureAndOcr() }
-            } else {
-                translateAndShow(blocks.map { ResultOverlay.Shown(it.bounds, it.text) })
+                .getOrNull()
+            val blocks = scan?.blocks.orEmpty()
+            val media = scan?.media.orEmpty()
+            Log.d(TAG, "读节点 ${blocks.size} 段，图片/视频区域 ${media.size} 个，${SystemClock.elapsedRealtime() - start} ms")
+            scan?.mediaKinds?.forEach { Log.d(TAG, "  区域 $it") }
+            when {
+                blocks.isEmpty() -> mainHandler.post { captureAndOcr() }
+                media.isEmpty() -> translateAndShow(blocks.map { ResultOverlay.Shown(it.bounds, it.text) })
+                else -> mainHandler.post { captureMixed(blocks, media) }
             }
         }
+    }
+
+    /** 界面文字 + 只识别图片/视频区域，合在一起翻译。主线程调用。 */
+    private fun captureMixed(blocks: List<TextBlock>, media: List<Rect>) {
+        val nodeItems = blocks.map { ResultOverlay.Shown(it.bounds, it.text) }
+        button?.setVisible(false)
+        mainHandler.removeCallbacks(releaseOcr)
+        val language = OcrLanguage.fromKey(AppSettings.ocrLanguage(this))
+        mainHandler.postDelayed({
+            val cap = capture
+            if (cap == null) {
+                worker.execute { translateAndShow(nodeItems) }
+                return@postDelayed
+            }
+            try {
+                cap.capture(
+                    onSuccess = { shot ->
+                        mainHandler.post { button?.setVisible(true) }
+                        val ocrItems = ocrRegions(shot, language, media, blocks)
+                        if (BuildConfig.DEBUG) cap.saveForDebug(shot.bitmap)
+                        shot.bitmap.recycle()
+                        mainHandler.post { scheduleRelease() }
+                        translateAndShow(nodeItems + ocrItems)
+                    },
+                    // 截不到（如安全页面）就只翻界面文字
+                    onFailure = { message ->
+                        Log.w(TAG, "图片区域截图失败，只翻界面文字：$message")
+                        mainHandler.post { button?.setVisible(true) }
+                        translateAndShow(nodeItems)
+                    },
+                )
+            } catch (e: RuntimeException) {
+                button?.setVisible(true)
+                worker.execute { translateAndShow(nodeItems) }
+            }
+        }, 150)
+    }
+
+    /**
+     * 只识别 [regions] 这几块，坐标换回屏幕坐标；落在界面文字框里、或和界面文字一样的行去掉（避免重复）。
+     * worker 线程。
+     */
+    private fun ocrRegions(
+        shot: ScreenCapture.Shot,
+        language: OcrLanguage,
+        regions: List<Rect>,
+        blocks: List<TextBlock>,
+    ): List<ResultOverlay.Shown> {
+        val full = shot.bitmap
+        val nodeTexts = blocks.map { it.text }.toSet()
+        val lines = ArrayList<io.github.willardzsw.texttack.ocr.OcrLine>()
+        for (region in regions) {
+            val area = Rect(region)
+            if (!area.intersect(0, 0, full.width, full.height) || area.isEmpty) continue
+            val image = Bitmap.createBitmap(full, area.left, area.top, area.width(), area.height())
+            try {
+                val ignoreTop = (statusBarHeight() - area.top).coerceAtLeast(0)
+                val r = ocr!!.recognize(image, language, ignoreTop)
+                Log.d(TAG, "区域 ${area.toShortString()} 识别 ${r.lines.size} 行（检测 ${r.detectMs} 识别 ${r.recognizeMs} ms）")
+                r.lines.forEach { line ->
+                    val moved = line.offset(area.left, area.top)
+                    val c = moved.bounds
+                    val overlapsNode = blocks.any { b ->
+                        Rect(b.bounds).apply { inset(-8, -8) }.contains(c.centerX(), c.centerY())
+                    }
+                    if (!overlapsNode && moved.text !in nodeTexts) lines.add(moved)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "区域识别失败", e)
+            } finally {
+                if (image !== full) image.recycle()
+            }
+        }
+        return OcrParagraphs.group(lines.sortedWith(compareBy({ it.bounds.top }, { it.bounds.left })))
+            .map { ResultOverlay.Shown(it.bounds, it.text) }
     }
 
     private fun startRegionSelect() {
@@ -372,7 +456,8 @@ class TranslateAccessibilityService : AccessibilityService() {
                 if (intent.action == DEBUG_NODES_ACTION) {
                     worker.execute {
                         NodeTextReader.describeWindows(this@TranslateAccessibilityService).forEach { Log.d(TAG, "调试 窗口 $it") }
-                        val list = NodeTextReader.read(this@TranslateAccessibilityService)
+                        val scan = NodeTextReader.scan(this@TranslateAccessibilityService); val list = scan.blocks
+                        scan.mediaKinds.forEach { Log.d(TAG, "调试 图片区域 $it") }
                         Log.d(TAG, "调试 节点：${list.size} 段")
                         list.forEach { Log.d(TAG, "调试 节点 ${it.bounds.toShortString()} ${it.text}") }
                         if (intent.getBooleanExtra("translate", false)) debugTranslate(list.map { it.text })

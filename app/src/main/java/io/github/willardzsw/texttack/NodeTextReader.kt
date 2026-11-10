@@ -30,6 +30,8 @@ object NodeTextReader {
     private const val MAX_BLOCKS = 400
     private const val MIN_SIZE_DP = 4f
     private const val MIN_FONT_SP = 9f
+    private const val MIN_MEDIA_DP = 80f
+    private const val MIN_MEDIA_SCREEN_FRACTION = 0.04
 
     /** 不读：自己的悬浮层、状态栏/导航栏等系统窗口、输入法键盘。 */
     private val SKIPPED_WINDOW_TYPES = setOf(
@@ -48,7 +50,16 @@ object NodeTextReader {
      * - 只露出一部分的段落先不读：按"框面积 ÷ 字数"估算字号，小于 [MIN_FONT_SP] 说明整段文字只露出一小条
      *   （滑动时被视口裁掉），硬塞译文会缩得很小；等它完全滑进来再读
      */
-    fun read(service: AccessibilityService): List<TextBlock> {
+    fun read(service: AccessibilityService): List<TextBlock> = scan(service).blocks
+
+    /** 一次读取的结果：界面文字 + 界面文字读不到的图片/视频/画布区域（要截图识别的地方）。 */
+    class Scan(val blocks: List<TextBlock>, val media: List<Rect>, val mediaKinds: List<String>)
+
+    /**
+     * 读界面文字，同时找出图片、视频、游戏画布这类区域：这些控件里的字读不到，只能截图识别。
+     * 太小的（图标、头像）不算：宽、高都要至少 [MIN_MEDIA_DP]，面积至少屏幕的 [MIN_MEDIA_SCREEN_FRACTION]。
+     */
+    fun scan(service: AccessibilityService): Scan {
         val wm = service.getSystemService(AccessibilityService.WINDOW_SERVICE) as WindowManager
         val screen = wm.maximumWindowMetrics.bounds
         val metrics = service.resources.displayMetrics
@@ -56,6 +67,7 @@ object NodeTextReader {
             screen = screen,
             minSize = (MIN_SIZE_DP * metrics.density).toInt(),
             minFontPx = android.util.TypedValue.applyDimension(android.util.TypedValue.COMPLEX_UNIT_SP, MIN_FONT_SP, metrics),
+            minMediaPx = (MIN_MEDIA_DP * metrics.density).toInt(),
         )
 
         // 从最上层往下：每处理完一个窗口，就把它的范围算进"已被盖住"
@@ -76,7 +88,28 @@ object NodeTextReader {
             if (!(window.type == AccessibilityWindowInfo.TYPE_SYSTEM && large)) ctx.covered.add(Rect(bounds))
         }
         if (windows.isEmpty()) service.rootInActiveWindow?.let { visit(it, ctx, 0) }
-        return ctx.out.values.toList()
+        val merged = mergeOverlapping(ctx.media)
+        return Scan(ctx.out.values.toList(), merged, ctx.mediaKinds)
+    }
+
+    /** 相交的区域合并成一个外接矩形，减少截图识别的次数。 */
+    private fun mergeOverlapping(rects: List<Rect>): List<Rect> {
+        val out = rects.map { Rect(it) }.toMutableList()
+        var changed = true
+        while (changed) {
+            changed = false
+            loop@ for (i in out.indices) {
+                for (j in i + 1 until out.size) {
+                    if (Rect.intersects(out[i], out[j])) {
+                        out[i].union(out[j])
+                        out.removeAt(j)
+                        changed = true
+                        break@loop
+                    }
+                }
+            }
+        }
+        return out
     }
 
     /** 调试用：当前窗口列表（层级、类型、范围、包名）。 */
@@ -88,9 +121,11 @@ object NodeTextReader {
         }
     }
 
-    private class Ctx(val screen: Rect, val minSize: Int, val minFontPx: Float) {
+    private class Ctx(val screen: Rect, val minSize: Int, val minFontPx: Float, val minMediaPx: Int) {
         val out = LinkedHashMap<String, TextBlock>()
         val covered = ArrayList<Rect>()
+        val media = ArrayList<Rect>()
+        val mediaKinds = ArrayList<String>()
     }
 
     private fun visit(node: AccessibilityNodeInfo, ctx: Ctx, depth: Int) {
@@ -99,11 +134,35 @@ object NodeTextReader {
 
         val text = node.text?.toString()?.trim().orEmpty()
         if (text.isNotEmpty()) add(node, text, ctx)
+        if (isMediaClass(node.className?.toString())) addMedia(node, ctx)
 
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
             visit(child, ctx, depth + 1)
         }
+    }
+
+    /**
+     * 图片、视频、画布类控件：android.widget.ImageView 及其子类（类名以 ImageView 结尾）、
+     * SurfaceView / TextureView / VideoView（视频、游戏），网页里的图片（WebView 报告为 android.widget.Image）。
+     */
+    private fun isMediaClass(cls: String?): Boolean {
+        if (cls == null) return false
+        val simple = cls.substringAfterLast('.')
+        return simple.endsWith("ImageView") || simple == "Image" ||
+            simple.endsWith("SurfaceView") || simple.endsWith("TextureView") || simple.endsWith("VideoView")
+    }
+
+    private fun addMedia(node: AccessibilityNodeInfo, ctx: Ctx) {
+        val rect = Rect()
+        node.getBoundsInScreen(rect)
+        if (!rect.intersect(ctx.screen)) return
+        if (rect.width() < ctx.minMediaPx || rect.height() < ctx.minMediaPx) return
+        val screenArea = ctx.screen.width().toLong() * ctx.screen.height()
+        if (rect.width().toLong() * rect.height() < screenArea * MIN_MEDIA_SCREEN_FRACTION) return
+        if (ctx.covered.any { it.contains(rect.centerX(), rect.centerY()) }) return
+        ctx.media.add(rect)
+        ctx.mediaKinds.add("${node.className?.toString()?.substringAfterLast('.')} ${rect.toShortString()}")
     }
 
     private fun add(node: AccessibilityNodeInfo, value: String, ctx: Ctx) {
