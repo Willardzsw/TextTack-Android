@@ -46,13 +46,17 @@ class RealtimeTranslator(private val host: Host) {
         fun ocrLanguage(): OcrLanguage
         fun statusBarHeight(): Int
         fun screenBounds(): Rect
+        /** 最上层应用窗口的 id 和屏幕位置；没有返回 null。 */
+        fun topAppWindow(): Pair<Int, Rect>?
+        fun targetLanguage(): io.github.willardzsw.texttack.translate.TargetLanguage
         fun buttonBounds(): Rect?
         fun setButtonVisible(visible: Boolean)
         fun showError(message: String)
         fun onStopped()
     }
 
-    private enum class Mode { OFF, NODES, SCREEN }
+    /** NODES = 实时读取（只读界面文字）；FULL = 实时截屏（只截应用窗口整屏识别）；SCREEN = 实时框选（横带）。 */
+    private enum class Mode { OFF, NODES, FULL, SCREEN }
 
     @Volatile private var mode = Mode.OFF
     private var region: Rect? = null
@@ -213,6 +217,10 @@ class RealtimeTranslator(private val host: Host) {
 
     /** 服务收到无障碍事件时调用（主线程）。 */
     fun onEvent(event: AccessibilityEvent) {
+        if (mode == Mode.FULL) {
+            onFullEvent(event)
+            return
+        }
         if (mode != Mode.NODES) return
         val pkg = event.packageName?.toString()
         if (pkg == host.packageName || pkg == "com.android.systemui") return
@@ -277,7 +285,6 @@ class RealtimeTranslator(private val host: Host) {
                         shownSignature = signature
                     }
                 }
-                updateMedia(scan)
                 // 只有内容变了才重画，免得视频播放时每次刷新都闪一下
                 if (nodeItems !== beforeNodes || mediaItems !== beforeMedia || !host.overlay.isShowing) render()
                 if (refreshPending) {
@@ -331,14 +338,77 @@ class RealtimeTranslator(private val host: Host) {
         }
     }
 
+    // ---------- 实时截屏 ----------
+    //
+    // 不读界面文字。每 [INTERVAL_MS] 只截最上层应用窗口（takeScreenshotOfWindow，不包括我们的译文层），
+    // 整个窗口（去掉状态栏）识别；画面没变跳过，有新文字才翻译；本来就是目标语言的文字不翻、不盖。
+    // 译文盖在原位置，不挡手指。下面的 mediaCycle / processMediaShot 两种用法共用。
+
+    fun startFull() {
+        stop(notify = false)
+        mode = Mode.FULL
+        generation++
+        currentScan = null
+        mediaKey = null
+        mediaFingerprint = null
+        Log.i(TAG, "实时翻译开始：截屏模式")
+        refreshFullWindow()
+        mediaLoopRunning = true
+        val gen = generation
+        host.mainHandler.postDelayed({ mediaCycle(gen) }, 150)
+    }
+
+    /** 找最上层应用窗口，识别范围 = 窗口去掉状态栏。 */
+    private fun refreshFullWindow() {
+        val w = host.topAppWindow()
+        if (w == null) {
+            mediaWindowId = -1
+            mediaRegions = emptyList()
+            return
+        }
+        val (id, bounds) = w
+        if (id != mediaWindowId || bounds != mediaWindowBounds) {
+            mediaFingerprint = null
+            mediaKey = null
+        }
+        mediaWindowId = id
+        mediaWindowBounds = Rect(bounds)
+        val top = maxOf(bounds.top, host.statusBarHeight())
+        mediaRegions = if (bounds.bottom > top) listOf(Rect(bounds.left, top, bounds.right, bounds.bottom)) else emptyList()
+    }
+
+    private fun onFullEvent(event: AccessibilityEvent) {
+        val pkg = event.packageName?.toString()
+        if (pkg == host.packageName || pkg == "com.android.systemui") return
+        when (event.eventType) {
+            AccessibilityEvent.TYPE_VIEW_SCROLLED,
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
+                // 位置变了，旧译文先收起；下一轮重新识别
+                if (mediaItems.isNotEmpty()) {
+                    mediaItems = emptyList()
+                    render()
+                }
+                mediaKey = null
+                mediaFingerprint = null
+            }
+        }
+    }
+
     private fun mediaCycle(gen: Int) {
-        if (gen != generation || mode != Mode.NODES || mediaRegions.isEmpty() || mediaWindowId == -1) {
+        if (mode == Mode.FULL) refreshFullWindow()
+        val alive = mode == Mode.NODES || mode == Mode.FULL
+        if (gen != generation || !alive || mediaRegions.isEmpty() || mediaWindowId == -1) {
+            if (gen == generation && mode == Mode.FULL) {
+                // 暂时找不到应用窗口（比如在切换中），稍后再试
+                host.mainHandler.postDelayed({ mediaCycle(gen) }, INTERVAL_MS * 2)
+                return
+            }
             mediaLoopRunning = false
             return
         }
         val next = { delay: Long ->
             host.mainHandler.post {
-                if (gen == generation && mode == Mode.NODES) host.mainHandler.postDelayed({ mediaCycle(gen) }, delay)
+                if (gen == generation && (mode == Mode.NODES || mode == Mode.FULL)) host.mainHandler.postDelayed({ mediaCycle(gen) }, delay)
                 else mediaLoopRunning = false
             }
             Unit
@@ -394,21 +464,23 @@ class RealtimeTranslator(private val host: Host) {
                         if (scan?.coversUi(moved.bounds) != true && moved.text !in nodeTexts) lines.add(moved)
                     }
                 }
+                val target = host.targetLanguage()
                 val paragraphs = OcrParagraphs.group(lines.sortedWith(compareBy({ it.bounds.top }, { it.bounds.left })))
+                    .filterNot { mode == Mode.FULL && TextFilters.isInTargetLanguage(it.text, target) }
                 // 只比文字：位置稍有抖动、文字没变就不重画，免得闪
                 val key = paragraphs.joinToString("\n") { it.text }
                 if (key == mediaKey) return "识别 ${lines.size} 行，文字没变"
                 mediaKey = key
                 if (paragraphs.isEmpty()) {
                     host.mainHandler.post {
-                        if (gen == generation && mode == Mode.NODES) { mediaItems = emptyList(); render() }
+                        if (gen == generation && (mode == Mode.NODES || mode == Mode.FULL)) { mediaItems = emptyList(); render() }
                     }
                     return "没有文字"
                 }
                 translateExecutor.execute {
                     val translated = translateCached(paragraphs.map { it.text }) ?: return@execute
                     host.mainHandler.post {
-                        if (gen != generation || mode != Mode.NODES || key != mediaKey) return@post
+                        if (gen != generation || (mode != Mode.NODES && mode != Mode.FULL) || key != mediaKey) return@post
                         mediaItems = paragraphs.mapIndexed { i, p -> ResultOverlay.Shown(p.bounds, translated[i]) }
                         render()
                     }

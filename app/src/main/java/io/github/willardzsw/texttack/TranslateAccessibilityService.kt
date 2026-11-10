@@ -117,6 +117,16 @@ class TranslateAccessibilityService : AccessibilityService() {
         override fun ocrLanguage() = OcrLanguage.fromKey(AppSettings.ocrLanguage(this@TranslateAccessibilityService))
         override fun statusBarHeight() = this@TranslateAccessibilityService.statusBarHeight()
         override fun screenBounds(): Rect = windowManager.maximumWindowMetrics.bounds
+        override fun targetLanguage() = TargetLanguage.fromKey(AppSettings.targetLanguage(this@TranslateAccessibilityService))
+        override fun topAppWindow(): Pair<Int, Rect>? {
+            val w = windows.sortedByDescending { it.layer }.firstOrNull {
+                it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION &&
+                    it.root?.packageName != packageName
+            } ?: return null
+            val r = Rect()
+            w.getBoundsInScreen(r)
+            return w.id to r
+        }
         override fun buttonBounds() = button?.boundsOnScreen()
         override fun setButtonVisible(visible: Boolean) { button?.setVisible(visible) }
         override fun showError(message: String) {
@@ -129,7 +139,7 @@ class TranslateAccessibilityService : AccessibilityService() {
         }
     }
 
-    /** 实时：翻界面文字（网页、聊天等）。界面一段文字都读不到时，改为框选区域截图识别。 */
+    /** 实时读取：只翻界面文字（网页、聊天等）。界面一段文字都读不到时，改用实时截屏。 */
     private fun startRealtime() {
         if (busy) return
         val rt = realtime ?: return
@@ -141,10 +151,20 @@ class TranslateAccessibilityService : AccessibilityService() {
                     rt.startNodes()
                     button?.setRealtime(true)
                 } else {
-                    startRealtimeRegion()
+                    startRealtimeFull()
                 }
             }
         }
+    }
+
+    /** 实时截屏：只截应用窗口整屏识别，译文盖在原位（视频、游戏）。 */
+    private fun startRealtimeFull() {
+        if (busy) return
+        val rt = realtime ?: return
+        overlay?.dismiss()
+        mainHandler.removeCallbacks(releaseOcr)
+        rt.startFull()
+        button?.setRealtime(true)
     }
 
     /** 实时框选：上下拖出一条全宽横带，盯着截图识别（视频字幕、游戏对话框）。 */
@@ -183,7 +203,8 @@ class TranslateAccessibilityService : AccessibilityService() {
                 ActionMenu.Item("框选") { startRegionSelect() },
                 ActionMenu.Item("截图翻译") { if (!busy) { realtime?.stop(); begin(); captureAndOcr() } },
                 if (live) ActionMenu.Item("停止实时") { realtime?.stop() } else null,
-                if (!live) ActionMenu.Item("实时") { startRealtime() } else null,
+                if (!live) ActionMenu.Item("实时读取") { startRealtime() } else null,
+                if (!live) ActionMenu.Item("实时截屏") { startRealtimeFull() } else null,
                 if (!live) ActionMenu.Item("实时框选") { startRealtimeRegion() } else null,
             ),
         )

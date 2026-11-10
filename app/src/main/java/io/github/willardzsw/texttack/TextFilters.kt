@@ -62,6 +62,34 @@ object TextFilters {
         return counterLabel.matches(t) || counterLabelZh.matches(t)
     }
 
+    /**
+     * 这段文字本来就是目标语言（按文字种类粗判）：实时截屏里这种不翻、不盖，画面更干净。
+     * - 简体/繁体中文：有汉字，没有拉丁字母、泰文、日文假名、韩文
+     * - 泰语：有泰文，没有拉丁字母、汉字
+     * - 英语：只有拉丁字母
+     * - 日语：有假名；韩语：有韩文
+     */
+    fun isInTargetLanguage(text: String, target: io.github.willardzsw.texttack.translate.TargetLanguage): Boolean {
+        var han = false; var latin = false; var thai = false; var kana = false; var hangul = false
+        for (c in text) {
+            when {
+                c in '\u4E00'..'\u9FFF' || c in '\u3400'..'\u4DBF' -> han = true
+                c in 'A'..'Z' || c in 'a'..'z' -> latin = true
+                c in '\u0E00'..'\u0E7F' -> thai = true
+                c in '\u3040'..'\u30FF' -> kana = true
+                c in '\uAC00'..'\uD7AF' -> hangul = true
+            }
+        }
+        return when (target) {
+            io.github.willardzsw.texttack.translate.TargetLanguage.SIMPLIFIED_CHINESE,
+            io.github.willardzsw.texttack.translate.TargetLanguage.TRADITIONAL_CHINESE -> han && !latin && !thai && !kana && !hangul
+            io.github.willardzsw.texttack.translate.TargetLanguage.THAI -> thai && !latin && !han
+            io.github.willardzsw.texttack.translate.TargetLanguage.ENGLISH -> latin && !han && !thai && !kana && !hangul
+            io.github.willardzsw.texttack.translate.TargetLanguage.JAPANESE -> kana
+            io.github.willardzsw.texttack.translate.TargetLanguage.KOREAN -> hangul
+        }
+    }
+
     /** 读界面节点时，这段文字是否值得显示/翻译。 */
     fun keepNodeText(text: String): Boolean =
         hasLetterOrDigit(text) && !isUrlLike(text) && !isNumericNoise(text) && !isCounterLabel(text)
