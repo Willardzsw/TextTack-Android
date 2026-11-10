@@ -257,7 +257,7 @@ class RealtimeTranslator(private val host: Host) {
         host.worker.execute {
             val scan = runCatching { host.scanNodes() }.getOrNull()
             val blocks = scan?.blocks.orEmpty()
-            currentBlocks = blocks
+            currentScan = scan
             val signature = blocks.joinToString("\n") { it.text + "@" + it.bounds.flattenToString() }
             val translations = if (signature == shownSignature || blocks.isEmpty()) null
             else translateCached(blocks.map { it.text })
@@ -294,7 +294,7 @@ class RealtimeTranslator(private val host: Host) {
     // （安卓 14+ takeScreenshotOfWindow，不包括我们的译文层），只看这些区域：画面没变就跳过，
     // 变了就识别，有新文字才翻译；译文和界面文字的译文一起盖在原位置上。
 
-    @Volatile private var currentBlocks: List<TextBlock> = emptyList()
+    @Volatile private var currentScan: NodeTextReader.Scan? = null
     private var nodeItems: List<ResultOverlay.Shown> = emptyList()
     private var mediaItems: List<ResultOverlay.Shown> = emptyList()
     @Volatile private var mediaRegions: List<Rect> = emptyList()
@@ -382,21 +382,21 @@ class RealtimeTranslator(private val host: Host) {
                 if (previous != null && !differs(previous, fp)) return "跳过（画面没变）"
                 mediaFingerprint = fp
 
-                val blocks = currentBlocks
-                val nodeTexts = blocks.map { it.text }.toSet()
+                val scan = currentScan
+                val nodeTexts = scan?.blocks.orEmpty().map { it.text }.toSet()
                 val lines = ArrayList<io.github.willardzsw.texttack.ocr.OcrLine>()
                 for ((screenRect, image) in crops) {
                     val ignoreTop = (host.statusBarHeight() - screenRect.top).coerceAtLeast(0)
                     val r = host.ocr.recognize(image, host.ocrLanguage(), ignoreTop)
                     r.lines.forEach { line ->
                         val moved = line.offset(screenRect.left, screenRect.top)
-                        val c = moved.bounds
-                        val overlapsNode = blocks.any { b -> Rect(b.bounds).apply { inset(-8, -8) }.contains(c.centerX(), c.centerY()) }
-                        if (!overlapsNode && moved.text !in nodeTexts) lines.add(moved)
+                        // 落在界面文字或按钮（点赞、评论、转发等）上的不算视频里的字
+                        if (scan?.coversUi(moved.bounds) != true && moved.text !in nodeTexts) lines.add(moved)
                     }
                 }
                 val paragraphs = OcrParagraphs.group(lines.sortedWith(compareBy({ it.bounds.top }, { it.bounds.left })))
-                val key = paragraphs.joinToString("\n") { it.text + "@" + it.bounds.flattenToString() }
+                // 只比文字：位置稍有抖动、文字没变就不重画，免得闪
+                val key = paragraphs.joinToString("\n") { it.text }
                 if (key == mediaKey) return "识别 ${lines.size} 行，文字没变"
                 mediaKey = key
                 if (paragraphs.isEmpty()) {

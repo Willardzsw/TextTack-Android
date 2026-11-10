@@ -22,6 +22,8 @@ class ResultOverlay(
 ) {
     private val density = context.resources.displayMetrics.density
     private var layer: View? = null
+    private var layerTouchable = true
+    private var shownItems: List<Shown> = emptyList()
 
     val isShowing: Boolean get() = layer != null
 
@@ -33,7 +35,20 @@ class ResultOverlay(
      * false：不挡手指，下层应用照常滑动点击（实时翻译）。
      */
     fun show(items: List<Shown>, touchable: Boolean = true) {
+        // 实时翻译：已有不挡手指的译文层时原地换内容，不删掉窗口再加（删加窗口会闪一下）
+        val existing = layer as? ScreenAbsoluteLayout
+        if (existing != null && !touchable && !layerTouchable) {
+            if (items == shownItems) return
+            existing.removeAllViews()
+            for (item in items) {
+                existing.addView(makeLabel(item), ScreenAbsoluteLayout.Params(item.bounds))
+            }
+            shownItems = items
+            return
+        }
         dismiss()
+        layerTouchable = touchable
+        shownItems = items
         val container = ScreenAbsoluteLayout(context)
         for (item in items) {
             container.addView(makeLabel(item), ScreenAbsoluteLayout.Params(item.bounds))
@@ -61,6 +76,7 @@ class ResultOverlay(
     fun dismiss() {
         layer?.let { runCatching { windowManager.removeView(it) } }
         layer = null
+        shownItems = emptyList()
     }
 
     private fun makeLabel(item: Shown): TextView {

@@ -32,6 +32,7 @@ object NodeTextReader {
     private const val MIN_FONT_SP = 9f
     private const val MIN_MEDIA_DP = 80f
     private const val MIN_MEDIA_SCREEN_FRACTION = 0.04
+    private const val MAX_CONTROL_SCREEN_FRACTION = 0.05
 
     /** 不读：自己的悬浮层、状态栏/导航栏等系统窗口、输入法键盘。 */
     private val SKIPPED_WINDOW_TYPES = setOf(
@@ -61,7 +62,20 @@ object NodeTextReader {
         val mediaWindowId: Int = -1,
         /** 这个窗口在屏幕上的位置（窗口截图坐标 + 左上角 = 屏幕坐标）。 */
         val mediaWindowBounds: Rect = Rect(),
-    )
+        /**
+         * 按钮、图标这类控件的范围（可点击或带说明文字、不太大的节点）。
+         * 视频上叠着的点赞、评论、转发按钮就在这里面；识别图片/视频区域时，落在这些范围里的字不要。
+         */
+        val controls: List<Rect> = emptyList(),
+    ) {
+        /** 识别出的一行（屏幕坐标）是否落在界面文字或按钮上：是就不算图片/视频里的字。 */
+        fun coversUi(r: Rect): Boolean {
+            val x = r.centerX()
+            val y = r.centerY()
+            return blocks.any { Rect(it.bounds).apply { inset(-8, -8) }.contains(x, y) } ||
+                controls.any { Rect(it).apply { inset(-8, -8) }.contains(x, y) }
+        }
+    }
 
     /**
      * 读界面文字，同时找出图片、视频、游戏画布这类区域：这些控件里的字读不到，只能截图识别。
@@ -99,7 +113,7 @@ object NodeTextReader {
         }
         if (windows.isEmpty()) service.rootInActiveWindow?.let { visit(it, ctx, 0) }
         val merged = mergeOverlapping(ctx.media)
-        return Scan(ctx.out.values.toList(), merged, ctx.mediaKinds, ctx.mediaWindowId, ctx.mediaWindowBounds)
+        return Scan(ctx.out.values.toList(), merged, ctx.mediaKinds, ctx.mediaWindowId, ctx.mediaWindowBounds, ctx.controls)
     }
 
     /** 相交的区域合并成一个外接矩形，减少截图识别的次数。 */
@@ -140,6 +154,7 @@ object NodeTextReader {
         var windowBounds = Rect()
         var mediaWindowId = -1
         var mediaWindowBounds = Rect()
+        val controls = ArrayList<Rect>()
     }
 
     private fun visit(node: AccessibilityNodeInfo, ctx: Ctx, depth: Int) {
@@ -149,6 +164,7 @@ object NodeTextReader {
         val text = node.text?.toString()?.trim().orEmpty()
         if (text.isNotEmpty()) add(node, text, ctx)
         if (isMediaClass(node.className?.toString())) addMedia(node, ctx)
+        else if (node.isClickable || !node.contentDescription.isNullOrBlank()) addControl(node, ctx)
 
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
@@ -184,6 +200,16 @@ object NodeTextReader {
         }
         ctx.media.add(rect)
         ctx.mediaKinds.add("${node.className?.toString()?.substringAfterLast('.')} ${rect.toShortString()}")
+    }
+
+    /** 按钮、图标：不超过屏幕的 [MAX_CONTROL_SCREEN_FRACTION]（整块可点的大容器不算）。 */
+    private fun addControl(node: AccessibilityNodeInfo, ctx: Ctx) {
+        val rect = Rect()
+        node.getBoundsInScreen(rect)
+        if (!rect.intersect(ctx.screen) || rect.width() < ctx.minSize || rect.height() < ctx.minSize) return
+        val screenArea = ctx.screen.width().toLong() * ctx.screen.height()
+        if (rect.width().toLong() * rect.height() > screenArea * MAX_CONTROL_SCREEN_FRACTION) return
+        ctx.controls.add(rect)
     }
 
     private fun add(node: AccessibilityNodeInfo, value: String, ctx: Ctx) {
