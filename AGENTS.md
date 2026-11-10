@@ -26,7 +26,7 @@ Windows 版仓库：`Willardzsw/TextTack`，本地在 `E:\Claude\overtranslate`�
 - 多项改动先对齐方案，用户说"开始改"后再写功能代码。
 - **功能改动后要提高版本号**（`app/build.gradle.kts` 里的 `versionCode` 和 `versionName`），提交说明里写上新版本号。
 - 用户自己在手机上测界面，不要用电脑操控工具去点界面。
-- 测试手机：荣耀 100（MAA-AN00），MagicOS 10，安卓 16（API 36），arm64-v8a。详见 `docs/第一版范围.md`。
+- 测试手机：荣耀 100（MAA-AN00，MagicOS 10，安卓 16）、vivo X90 Pro+（V2227A，OriginOS 6，安卓 16），都是 arm64-v8a。两台同时连电脑时，adb 要加 `-s 设备序列号`。详见 `docs/第一版范围.md`。
 
 ## 目录
 
