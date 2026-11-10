@@ -59,6 +59,13 @@ JAVA_HOME="/d/Program Files/Android/Android Studio/jbr" ./gradlew assembleDebug
 - 装到手机：`adb install -r app/build/outputs/apk/debug/app-debug.apk`（`adb` 在 `%LOCALAPPDATA%\Android\Sdk\platform-tools`）
 - 版本：Gradle 8.6、Android Gradle Plugin 8.4.1、Kotlin 1.9.24、compileSdk/targetSdk 34。
 
+## 发布
+
+- 正式版签名：仓库根目录的 `release.jks` 和 `keystore.properties`（都不进 git，`.gitignore` 已排除）。**要备份这两个文件**：丢了以后发的新版签名对不上，已安装的正式版无法覆盖更新，只能卸载重装。
+- 打包：`JAVA_HOME="/d/Program Files/Android/Android Studio/jbr" ./gradlew assembleRelease`，产物 `app/build/outputs/apk/release/app-release.apk`（已签名，含模型和许可证声明）。
+- 发布：打标签 `v版本号`，`gh release create v版本号 TextTack-Android-版本号.apk --title ... --notes ...`，说明用中文。
+- 调试版和正式版签名不同，手机上不能互相覆盖安装。
+
 ## 约束
 
 - **不要修改** Windows 版仓库 `E:\Claude\overtranslate`，只读参考；不要读取或复制里面的任何 API 密钥；不要碰它的 `profile-thai` 文件夹。

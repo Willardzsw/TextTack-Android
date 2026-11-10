@@ -4,27 +4,42 @@
 
 > 基于 [TextTack（贴译）](https://github.com/Willardzsw/TextTack) / OverTranslate 的思路，独立实现。不复用其 C# 代码。
 
-**当前状态**：项目准备阶段，只有空的应用框架，翻译功能还没有实现。
+**当前状态**：测试版（0.9.0），作者自用。主要在荣耀 100（安卓 16）上调试，vivo X90 Pro+ 上做过初步测试。
 
-## 特点（计划）
+## 功能
 
-- 以无障碍服务为核心：优先直接读取界面文字，不截屏、不耗电。
-- 读不到文字时（游戏、图片、自绘界面）用无障碍截屏 + 本地 OCR（PaddleOCR 模型，ONNX Runtime 运行），截图不离开手机。
-- 译文用无障碍悬浮层显示，不需要"显示在其他应用上层"权限。
-- 只需安卓 11 及以上。
+点屏幕边上的蓝色"译"按钮展开菜单：
 
-详见 [docs/第一版范围.md](docs/第一版范围.md)。
+- **翻译**：翻译当前屏幕，译文盖在原文位置上。界面文字直接读取；图片、视频里的字自动截图识别；游戏等读不到文字的界面整屏识别。
+- **框选**：上下拖出一条横带（宽度自动铺满），只翻译这一条里的内容。
+- **截图翻译**：整屏截图识别后翻译。
+- **实时读取**：跟着屏幕变化翻译界面文字（网页、聊天等），不截图。
+- **实时截屏**：跟着画面变化截图识别整屏（视频、游戏），译文盖在原位；本来就是目标语言的文字不翻。需要安卓 14 及以上。
+- **实时框选**：盯着一条横带（视频字幕、游戏对话框），译文显示在框外的横栏里，保留最近 3 句。
+
+其他：
+
+- 翻译服务：Google 翻译（默认，不用密钥）、OpenAI 兼容接口（设置项与 Windows 版一致）。
+- 文字识别（OCR）在手机上本地完成：PaddleOCR 模型，ONNX Runtime 运行，截图不离开手机。只有要翻译的文字会发给你选的翻译服务。
+- 识别语言：泰语、中文和英文。
+- 译文用无障碍悬浮层显示，不需要"显示在其他应用上层"权限；处理时不弹提示，只在出错时显示一行。
 
 ## 安装
 
-从 GitHub Releases 下载 APK 安装（不上 Google Play）。安卓 13 及以上需要先在应用信息里"允许受限设置"，才能开启无障碍服务。
+1. 从 [Releases](https://github.com/Willardzsw/TextTack-Android/releases) 下载 `TextTack-Android-版本号.apk`，在手机上安装。需要安卓 11 及以上、64 位 ARM 手机。
+2. **安卓 13 及以上**：从浏览器或文件管理器安装的应用，默认不能开无障碍。先到 系统设置 → 无障碍 里点一次"贴译 屏幕翻译"（会提示受限），再到 系统设置 → 应用 → 贴译 → 右上角菜单 → **允许受限设置**。
+3. 系统设置 → 无障碍 → 贴译 屏幕翻译 → 开启。
+4. 国产系统建议把贴译的电池设为"无限制"、允许自启动，并在最近任务里锁定，免得被杀后台后无障碍被关掉。
+5. vivo（OriginOS）每次更新安装后会把无障碍关掉，要重新打开。
+
+**从调试版换到正式版**：调试版（用数据线装的）和正式版的签名不同，不能直接覆盖安装。要先卸载调试版再装正式版，OpenAI 设置等需要重新填一遍。
 
 ## 构建
 
-见 [AGENTS.md](AGENTS.md) 的"构建"一节。OCR 模型不在仓库里，放法见 [docs/移植清单.md](docs/移植清单.md)。
+见 [AGENTS.md](AGENTS.md) 的"构建"和"发布"两节。OCR 模型不在仓库里，放法见 [docs/移植清单.md](docs/移植清单.md)（`scripts/copy-models.ps1`）。
 
 ## 许可证
 
 本项目代码使用 MIT 许可证，见 [LICENSE](LICENSE)。
 
-使用的 OCR 模型来自 [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR)（Apache-2.0），ONNX 格式由 [RapidOCR](https://github.com/RapidAI/RapidOCR) 导出（Apache-2.0）；运行库 [ONNX Runtime](https://github.com/microsoft/onnxruntime)（MIT）。
+使用的 OCR 模型来自 [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR)（Apache-2.0），ONNX 格式由 [RapidOCR](https://github.com/RapidAI/RapidOCR) 导出（Apache-2.0）；运行库 [ONNX Runtime](https://github.com/microsoft/onnxruntime)（MIT）。应用内"开源许可"里有完整声明。
