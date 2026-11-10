@@ -50,7 +50,7 @@ class OpenAiTranslator(private val options: OpenAiOptions) : Translator {
             prompt.hasContext -> segments(job)
             else -> alones(job)
         }
-        Log.d(TAG, "OpenAI 翻译：${texts.size} 段，模型 $model，${if (options.profile.batch) "整批" else "标准"}，" +
+        Log.i(TAG, "OpenAI 翻译：${texts.size} 段，模型 $model，${if (options.profile.batch) "整批" else "标准"}，" +
             "${if (prompt.isDefault) "默认提示词" else "自定义提示词"}，失败 ${job.failed} 段")
         if (job.translated == 0 && job.outcomes.any { it == null }) {
             throw TranslationException(localized(job.firstError))

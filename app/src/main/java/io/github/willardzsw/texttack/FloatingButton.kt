@@ -129,13 +129,13 @@ class FloatingButton(
 
         private val longPressRunnable = Runnable {
             longPressed = true
-            Log.d(TAG, "长按触发")
+            Log.i(TAG, "长按触发")
             view?.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
             onLongPress()
         }
 
         override fun onTouch(v: View, event: MotionEvent): Boolean {
-            if (event.actionMasked != MotionEvent.ACTION_MOVE) Log.d(TAG, "触摸 ${MotionEvent.actionToString(event.actionMasked)} 长按=$longPressed 拖动=$dragging")
+            if (event.actionMasked != MotionEvent.ACTION_MOVE) Log.i(TAG, "触摸 ${MotionEvent.actionToString(event.actionMasked)} 长按=$longPressed 拖动=$dragging")
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     downRawX = event.rawX

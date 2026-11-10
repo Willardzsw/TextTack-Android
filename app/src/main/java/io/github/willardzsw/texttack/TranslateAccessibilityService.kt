@@ -62,7 +62,7 @@ class TranslateAccessibilityService : AccessibilityService() {
         worker.execute {
             if (ocr?.isLoaded == true) {
                 ocr?.close()
-                Log.d(TAG, "OCR 模型空闲，已释放")
+                Log.i(TAG, "OCR 模型空闲，已释放")
             }
         }
     }
@@ -209,8 +209,8 @@ class TranslateAccessibilityService : AccessibilityService() {
                 .getOrNull()
             val blocks = scan?.blocks.orEmpty()
             val media = scan?.media.orEmpty()
-            Log.d(TAG, "读节点 ${blocks.size} 段，图片/视频区域 ${media.size} 个，${SystemClock.elapsedRealtime() - start} ms")
-            scan?.mediaKinds?.forEach { Log.d(TAG, "  区域 $it") }
+            Log.i(TAG, "读节点 ${blocks.size} 段，图片/视频区域 ${media.size} 个，${SystemClock.elapsedRealtime() - start} ms")
+            scan?.mediaKinds?.forEach { Log.i(TAG, "  区域 $it") }
             when {
                 blocks.isEmpty() -> mainHandler.post { captureAndOcr() }
                 media.isEmpty() -> translateAndShow(blocks.map { ResultOverlay.Shown(it.bounds, it.text) })
@@ -277,7 +277,7 @@ class TranslateAccessibilityService : AccessibilityService() {
             try {
                 val ignoreTop = (statusBarHeight() - area.top).coerceAtLeast(0)
                 val r = ocr!!.recognize(image, language, ignoreTop)
-                Log.d(TAG, "区域 ${area.toShortString()} 识别 ${r.lines.size} 行（检测 ${r.detectMs} 识别 ${r.recognizeMs} ms）")
+                Log.i(TAG, "区域 ${area.toShortString()} 识别 ${r.lines.size} 行（检测 ${r.detectMs} 识别 ${r.recognizeMs} ms）")
                 r.lines.forEach { line ->
                     val moved = line.offset(area.left, area.top)
                     // 落在界面文字或按钮（点赞、评论、转发等）上的不算图片/视频里的字
@@ -306,7 +306,7 @@ class TranslateAccessibilityService : AccessibilityService() {
         worker.execute {
             val blocks = runCatching { NodeTextReader.read(this) }.getOrDefault(emptyList())
                 .filter { region.contains(it.bounds.centerX(), it.bounds.centerY()) }
-            Log.d(TAG, "框选 ${region.toShortString()}：节点 ${blocks.size} 段")
+            Log.i(TAG, "框选 ${region.toShortString()}：节点 ${blocks.size} 段")
             if (blocks.isEmpty()) {
                 mainHandler.post { captureAndOcr(region) }
             } else {
@@ -390,7 +390,7 @@ class TranslateAccessibilityService : AccessibilityService() {
             mainHandler.post { finish("识别失败：${it.message}") }
             return
         }
-        Log.d(TAG, "OCR ${language.key}：${r.lines.size} 行 / ${r.boxCount} 框，截屏 ${shot.tookMs} 加载 ${r.loadMs} " +
+        Log.i(TAG, "OCR ${language.key}：${r.lines.size} 行 / ${r.boxCount} 框，截屏 ${shot.tookMs} 加载 ${r.loadMs} " +
             "检测 ${r.detectMs} 识别 ${r.recognizeMs} ms")
         val paragraphs = OcrParagraphs.group(r.lines)
         if (paragraphs.isEmpty()) {
@@ -415,9 +415,9 @@ class TranslateAccessibilityService : AccessibilityService() {
             mainHandler.post { finish("翻译失败：${e.message}") }
             return
         }
-        Log.d(TAG, "翻译 ${items.size} 段（${provider.label} → ${target.label}），${SystemClock.elapsedRealtime() - start} ms")
+        Log.i(TAG, "翻译 ${items.size} 段（${provider.label} → ${target.label}），${SystemClock.elapsedRealtime() - start} ms")
         val shown = items.mapIndexed { i, item -> item.copy(text = translations.getOrNull(i) ?: item.text) }
-        shown.forEachIndexed { i, s -> Log.d(TAG, "译文 ${s.bounds.toShortString()} ${items[i].text} → ${s.text}") }
+        shown.forEachIndexed { i, s -> Log.i(TAG, "译文 ${s.bounds.toShortString()} ${items[i].text} → ${s.text}") }
         mainHandler.post {
             finish()
             overlay?.show(shown)
@@ -457,11 +457,11 @@ class TranslateAccessibilityService : AccessibilityService() {
                     // 调试：只截图片/视频所在的应用窗口，存成 screenshots/window.png
                     worker.execute {
                         val scan = NodeTextReader.scan(this@TranslateAccessibilityService)
-                        Log.d(TAG, "调试 窗口截图：窗口 ${scan.mediaWindowId} ${scan.mediaWindowBounds.toShortString()}，区域 ${scan.media.size} 个")
+                        Log.i(TAG, "调试 窗口截图：窗口 ${scan.mediaWindowId} ${scan.mediaWindowBounds.toShortString()}，区域 ${scan.media.size} 个")
                         if (scan.mediaWindowId == -1) return@execute
                         capture?.captureWindow(scan.mediaWindowId,
                             onSuccess = { shot ->
-                                Log.d(TAG, "调试 窗口截图成功 ${shot.bitmap.width}×${shot.bitmap.height}，${shot.tookMs} ms")
+                                Log.i(TAG, "调试 窗口截图成功 ${shot.bitmap.width}×${shot.bitmap.height}，${shot.tookMs} ms")
                                 runCatching {
                                     val dir = File(getExternalFilesDir(null), "screenshots").apply { mkdirs() }
                                     File(dir, "window.png").outputStream().use { shot.bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
@@ -474,12 +474,12 @@ class TranslateAccessibilityService : AccessibilityService() {
                 }
                 if (intent.action == DEBUG_NODES_ACTION) {
                     worker.execute {
-                        NodeTextReader.describeWindows(this@TranslateAccessibilityService).forEach { Log.d(TAG, "调试 窗口 $it") }
+                        NodeTextReader.describeWindows(this@TranslateAccessibilityService).forEach { Log.i(TAG, "调试 窗口 $it") }
                         val scan = NodeTextReader.scan(this@TranslateAccessibilityService); val list = scan.blocks
-                        scan.mediaKinds.forEach { Log.d(TAG, "调试 图片区域 $it") }
-                        Log.d(TAG, "调试 按钮区域 ${scan.controls.size} 个：${scan.controls.joinToString { it.toShortString() }}")
-                        Log.d(TAG, "调试 节点：${list.size} 段")
-                        list.forEach { Log.d(TAG, "调试 节点 ${it.bounds.toShortString()} ${it.text}") }
+                        scan.mediaKinds.forEach { Log.i(TAG, "调试 图片区域 $it") }
+                        Log.i(TAG, "调试 按钮区域 ${scan.controls.size} 个：${scan.controls.joinToString { it.toShortString() }}")
+                        Log.i(TAG, "调试 节点：${list.size} 段")
+                        list.forEach { Log.i(TAG, "调试 节点 ${it.bounds.toShortString()} ${it.text}") }
                         if (intent.getBooleanExtra("translate", false)) debugTranslate(list.map { it.text })
                     }
                     return
@@ -521,11 +521,11 @@ class TranslateAccessibilityService : AccessibilityService() {
         engine.maxDetectSide = side
         try {
             val r = engine.recognize(bitmap, language, if (region == null) statusBarHeight() else 0)
-            Log.d(TAG, "调试 OCR ${file.name} 长边 $side ${language.key}：${r.lines.size} 行 / ${r.boxCount} 框，" +
+            Log.i(TAG, "调试 OCR ${file.name} 长边 $side ${language.key}：${r.lines.size} 行 / ${r.boxCount} 框，" +
                 "检测输入 ${r.detectorWidth}×${r.detectorHeight}，加载 ${r.loadMs} 检测 ${r.detectMs} 识别 ${r.recognizeMs} ms")
-            r.lines.forEach { Log.d(TAG, "调试 OCR 行 %.2f %s %s".format(it.score, it.bounds.toShortString(), it.text)) }
+            r.lines.forEach { Log.i(TAG, "调试 OCR 行 %.2f %s %s".format(it.score, it.bounds.toShortString(), it.text)) }
             val paragraphs = OcrParagraphs.group(r.lines)
-            paragraphs.forEach { Log.d(TAG, "调试 OCR 段落 ${it.bounds.toShortString()} ${it.text}") }
+            paragraphs.forEach { Log.i(TAG, "调试 OCR 段落 ${it.bounds.toShortString()} ${it.text}") }
             if (translate) debugTranslate(paragraphs.map { it.text })
         } catch (e: Exception) {
             Log.e(TAG, "调试 OCR 失败", e)
@@ -543,8 +543,8 @@ class TranslateAccessibilityService : AccessibilityService() {
         val provider = TranslationProvider.fromKey(AppSettings.translationProvider(this))
         try {
             val out = translatorFor(provider).translate(texts, target)
-            Log.d(TAG, "调试 翻译 ${texts.size} 段（${provider.label} → ${target.label}）${SystemClock.elapsedRealtime() - start} ms")
-            texts.forEachIndexed { i, t -> Log.d(TAG, "调试 翻译 $t → ${out[i]}") }
+            Log.i(TAG, "调试 翻译 ${texts.size} 段（${provider.label} → ${target.label}）${SystemClock.elapsedRealtime() - start} ms")
+            texts.forEachIndexed { i, t -> Log.i(TAG, "调试 翻译 $t → ${out[i]}") }
         } catch (e: Exception) {
             Log.e(TAG, "调试 翻译失败：${e.message}", e)
         }

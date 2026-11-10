@@ -43,7 +43,7 @@ class ScreenCapture(
                     } finally {
                         buffer.close()
                     }
-                    Log.d(TAG, "截屏 ${bitmap?.width}×${bitmap?.height}，$tookMs ms")
+                    Log.i(TAG, "截屏 ${bitmap?.width}×${bitmap?.height}，$tookMs ms")
                     if (bitmap == null) onFailure("截屏成功，但转换图片失败") else onSuccess(Shot(bitmap, tookMs))
                 }
 

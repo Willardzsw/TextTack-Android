@@ -66,7 +66,7 @@ class RealtimeTranslator(private val host: Host) {
         stop(notify = false)
         mode = Mode.NODES
         generation++
-        Log.d(TAG, "实时翻译开始：界面文字模式")
+        Log.i(TAG, "实时翻译开始：界面文字模式")
         scheduleNodeRefresh(0)
     }
 
@@ -83,7 +83,7 @@ class RealtimeTranslator(private val host: Host) {
         generation++
         resetScreenState()
         host.panel.show(area, band = true) { moved -> moveRegion(moved) }
-        Log.d(TAG, "实时翻译开始：截图模式 ${area.toShortString()}")
+        Log.i(TAG, "实时翻译开始：截图模式 ${area.toShortString()}")
         val gen = generation
         host.mainHandler.postDelayed({ screenCycle(gen) }, 200)
     }
@@ -95,7 +95,7 @@ class RealtimeTranslator(private val host: Host) {
         rememberBand(area)
         processedFingerprint = null
         lastOcrText = null
-        Log.d(TAG, "实时框选改到 ${area.toShortString()}")
+        Log.i(TAG, "实时框选改到 ${area.toShortString()}")
     }
 
     private fun rememberBand(area: Rect) {
@@ -113,7 +113,7 @@ class RealtimeTranslator(private val host: Host) {
         processedFingerprint = null
         lastOcrText = null
         host.panel.show(area, band = true) { moved -> moveRegion(moved) }
-        Log.d(TAG, "转屏，实时框选换算到 ${area.toShortString()}")
+        Log.i(TAG, "转屏，实时框选换算到 ${area.toShortString()}")
     }
 
     private fun resetScreenState() {
@@ -129,7 +129,7 @@ class RealtimeTranslator(private val host: Host) {
 
     fun stop(notify: Boolean = true) {
         if (mode == Mode.OFF) return
-        Log.d(TAG, "实时翻译停止")
+        Log.i(TAG, "实时翻译停止")
         mode = Mode.OFF
         generation++
         host.mainHandler.removeCallbacks(nodeRefresh)
@@ -176,7 +176,7 @@ class RealtimeTranslator(private val host: Host) {
             synchronized(cache) {
                 missing.forEachIndexed { i, t -> out.getOrNull(i)?.let { cache[prefix + t] = it } }
             }
-            Log.d(TAG, "实时翻译：新翻 ${missing.size} 段，${SystemClock.elapsedRealtime() - start} ms")
+            Log.i(TAG, "实时翻译：新翻 ${missing.size} 段，${SystemClock.elapsedRealtime() - start} ms")
         }
         return synchronized(cache) { texts.map { cache[prefix + it] ?: it } }
     }
@@ -322,7 +322,7 @@ class RealtimeTranslator(private val host: Host) {
             mediaFingerprint = null
             mediaKey = null
             if (regions.isEmpty()) mediaItems = emptyList()
-            Log.d(TAG, "实时 图片/视频区域 ${regions.size} 个：${regions.joinToString { it.toShortString() }}")
+            Log.i(TAG, "实时 图片/视频区域 ${regions.size} 个：${regions.joinToString { it.toShortString() }}")
         }
         if (regions.isNotEmpty() && !mediaLoopRunning && !mediaUnsupported) {
             mediaLoopRunning = true
@@ -348,7 +348,7 @@ class RealtimeTranslator(private val host: Host) {
             mediaWindowId,
             onSuccess = { shot ->
                 val result = processMediaShot(shot, gen)
-                Log.d(TAG, "实时 区域一轮 ${SystemClock.elapsedRealtime() - start} ms，$result")
+                Log.i(TAG, "实时 区域一轮 ${SystemClock.elapsedRealtime() - start} ms，$result")
                 next(INTERVAL_MS)
             },
             onFailure = { message ->
@@ -458,7 +458,7 @@ class RealtimeTranslator(private val host: Host) {
                 host.capture.capture(
                     onSuccess = { shot ->
                         val result = processShot(shot, area, gen)
-                        Log.d(TAG, "实时截图一轮 ${SystemClock.elapsedRealtime() - start} ms，$result")
+                        Log.i(TAG, "实时截图一轮 ${SystemClock.elapsedRealtime() - start} ms，$result")
                         next(INTERVAL_MS)
                     },
                     onFailure = { message ->
@@ -491,7 +491,7 @@ class RealtimeTranslator(private val host: Host) {
 
                 val ignoreTop = (host.statusBarHeight() - crop.top).coerceAtLeast(0)
                 val r = host.ocr.recognize(image, host.ocrLanguage(), ignoreTop)
-                r.lines.forEach { Log.d(TAG, "实时 OCR 行 %.2f %s".format(it.score, it.text)) }
+                r.lines.forEach { Log.i(TAG, "实时 OCR 行 %.2f %s".format(it.score, it.text)) }
                 // 注：0.6.7 试过"新文字要读到两次一样才翻译"，但视频字幕约 0.7 秒就换、泰文上下标记识别会抖，
                 // 同样的结果很少连续出现，45 轮里只翻了 3 句，已去掉
                 val paragraphs = dropWatermarks(OcrParagraphs.group(r.lines), SystemClock.elapsedRealtime()).map { it.text }
@@ -545,7 +545,7 @@ class RealtimeTranslator(private val host: Host) {
         val dynamic = paragraphs.filterNot { p ->
             val s = seen[p.text]!!
             (now - s.firstAt > WATERMARK_MS && otherChangeAt > s.firstAt).also {
-                if (it) Log.d(TAG, "实时 当作水印跳过：${p.text}")
+                if (it) Log.i(TAG, "实时 当作水印跳过：${p.text}")
             }
         }
         val key = dynamic.joinToString("\n") { it.text }
@@ -562,7 +562,7 @@ class RealtimeTranslator(private val host: Host) {
         val start = SystemClock.elapsedRealtime()
         val translated = translateCached(paragraphs) ?: return
         val line = translated.joinToString(" ")
-        Log.d(TAG, "实时译文 #$seq ${SystemClock.elapsedRealtime() - start} ms：$line")
+        Log.i(TAG, "实时译文 #$seq ${SystemClock.elapsedRealtime() - start} ms：$line")
         host.mainHandler.post {
             if (gen != generation || mode != Mode.SCREEN || seq <= shownSeq) return@post
             shownSeq = seq
