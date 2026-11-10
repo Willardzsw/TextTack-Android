@@ -40,8 +40,22 @@ object TextFilters {
         return numericSymbols.replace(countUnits.replace(t, ""), "").isEmpty()
     }
 
+    private val counterLabel = Regex(
+        """(?i)^(\S+\s+)?(number\s+is|count\s+is)\s+[\d.,]+[kmb]?$|^\S+\s+[\d.,]+[kmb]?\s+times?$|""" +
+            """^[\d.,]+[kmb]?\s+(likes?|comments?|views?|shares?|reposts?|reshares?|saves?|plays?|replies|reply)$""",
+    )
+
+    /**
+     * 按钮上藏着的计数说明：屏幕上只显示数字，节点文字却是一句英文，
+     * 如 Instagram 的"Reposted 22 times""Save number is 76""Reshare number is 453""1,234 likes"。
+     * 只匹配"一个词 + 数字 + times"、"一个词 + number is + 数字"、"数字 + likes/comments/views…"这类整句，
+     * 正常句子（有更多的词）不受影响。
+     */
+    fun isCounterLabel(text: String): Boolean = counterLabel.matches(text.trim())
+
     /** 读界面节点时，这段文字是否值得显示/翻译。 */
-    fun keepNodeText(text: String): Boolean = hasLetterOrDigit(text) && !isUrlLike(text) && !isNumericNoise(text)
+    fun keepNodeText(text: String): Boolean =
+        hasLetterOrDigit(text) && !isUrlLike(text) && !isNumericNoise(text) && !isCounterLabel(text)
 
     private val codeToken = Regex("""^[A-Za-z0-9.\-/*_+:#]+$""")
     private val edgePunct = Regex("""^[\p{Punct}「」『』“”‘’（）【】]+|[\p{Punct}「」『』“”‘’（）【】]+$""")
